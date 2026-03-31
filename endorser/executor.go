@@ -17,6 +17,7 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
+	ethstate "github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/params"
@@ -42,6 +43,7 @@ type EVMEngine struct {
 	namespace         string
 	monotonicVersions bool
 	db                state.ReadStore
+	ethStateDB        *ethstate.StateDB
 	evmConfig         *EVMConfig
 }
 
@@ -51,20 +53,21 @@ func NewEVMEngine(namespace string, db state.ReadStore, evmConfig *EVMConfig, mo
 		namespace:         namespace,
 		db:                db,
 		monotonicVersions: monotonicVersions,
-		evmConfig:         evmConfig, // Will be set if custom config is needed
+		evmConfig:         evmConfig,
+		ethStateDB:        nil, // Will be set when priming state
 	}
 }
 
-// SetEVMConfig sets the EVM configuration (BlockContext, ChainConfig, VMConfig).
-// This allows callers to specify custom EVM execution parameters.
-// If not set, default values will be used during execution.
-func (e *EVMEngine) SetEVMConfig(config *EVMConfig) {
-	e.evmConfig = config
+// SetEthStateDB sets the ethStateDB for the EVMEngine. This allows reusing a primed ethStateDB.
+func (e *EVMEngine) SetEthStateDB(ethStateDB *ethstate.StateDB) {
+	if ethStateDB != nil {
+		e.ethStateDB = ethStateDB
+	}
 }
 
-// GetEVMConfig returns the current EVM configuration.
-func (e *EVMEngine) GetEVMConfig() *EVMConfig {
-	return e.evmConfig
+// GetEthStateDB returns the ethStateDB from the EVMEngine.
+func (e *EVMEngine) GetEthStateDB() *ethstate.StateDB {
+	return e.ethStateDB
 }
 
 // Execute runs a state-changing transaction and returns the EVM result,
@@ -145,11 +148,11 @@ func (e *EVMEngine) newExecutor(blockInfo *utils.BlockInfo, stateBlockNum uint64
 	if err != nil {
 		return nil, err
 	}
-	return newExecutor(sim, blockInfo, e.evmConfig), nil
+	return newExecutor(sim, blockInfo, e.evmConfig, e.ethStateDB), nil
 }
 
-// newSnapshotAt returns a SnapshotDB over the state at the given Fabric block height (0 = latest).
-func (e *EVMEngine) newSnapshotAt(blockNumber *big.Int) (*SnapshotDB, error) {
+// newSnapshotAt returns an ExtendedStateDB over the state at the given Fabric block height (0 = latest).
+func (e *EVMEngine) newSnapshotAt(blockNumber *big.Int) (ExtendedStateDB, error) {
 	blockNum := uint64(0)
 	if blockNumber != nil {
 		blockNum = blockNumber.Uint64()
@@ -164,7 +167,7 @@ func (e *EVMEngine) newSnapshotAt(blockNumber *big.Int) (*SnapshotDB, error) {
 // executor is a per-transaction EVM execution context. It is an internal type;
 // callers outside this package interact with EVMEngine instead.
 type executor struct {
-	state    *SnapshotDB
+	state    ExtendedStateDB
 	chainID  *big.Int
 	chainCfg *params.ChainConfig
 	blockCtx vm.BlockContext
@@ -174,7 +177,7 @@ type executor struct {
 // newExecutor creates an executor with the provided SimulationStore.
 // If blockInfo is not provided, the store's current version is used as the block number.
 // If evmConfig is provided, it overrides the default BlockContext, ChainConfig, and VMConfig.
-func newExecutor(sim *state.SimulationStore, blockInfo *utils.BlockInfo, evmConfig *EVMConfig) *executor {
+func newExecutor(sim *state.SimulationStore, blockInfo *utils.BlockInfo, evmConfig *EVMConfig, ethStateDB *ethstate.StateDB) *executor {
 	if blockInfo == nil {
 		// Note: sim.Version() is a Fabric block number, not an Ethereum block number — these are
 		// separate namespaces. With AllEthashProtocolChanges active from block 0 this is harmless,
@@ -217,8 +220,19 @@ func newExecutor(sim *state.SimulationStore, blockInfo *utils.BlockInfo, evmConf
 		}
 	}
 
+	// if we have been given a non-nil ethStateDB instance, it means that we are meant
+	// to instantiate a dual state DB that uses the ethStateDB instance alongside the
+	// simulator to handle state updates so that we can track eth root state evolution
+	var stateDB ExtendedStateDB
+	if ethStateDB == nil {
+		stateDB = NewSnapshotDB(sim)
+	} else {
+		// NOTE: this is only meant to be used in testing
+		stateDB = NewSnapshotDBWithDualState(sim, ethStateDB)
+	}
+
 	return &executor{
-		state:    NewSnapshotDB(sim),
+		state:    stateDB,
 		chainID:  cmn.ChainConfig.ChainID,
 		chainCfg: ethChainConfig,
 		blockCtx: blockCtx,
