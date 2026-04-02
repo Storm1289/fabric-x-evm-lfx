@@ -28,7 +28,6 @@ type ExtendedStateDB interface {
 	vm.StateDB
 	Result() blocks.ReadWriteSet
 	Logs() []state.Log
-	Ops() []StateOp
 }
 
 // DualStateDB implements the ExtendedStateDB interface by delegating all calls
@@ -420,7 +419,7 @@ func (d *DualStateDB) Finalise(deleteEmptyObjects bool) {
 func (d *DualStateDB) Result() blocks.ReadWriteSet {
 	d.logger.Debugf("Result: called")
 	result := d.snapshotDB.Result()
-	d.logger.Debugf("Result: returning result with %d reads, %d writes", len(result.Reads), len(result.Writes))
+	d.logger.Debugf("Result: returning result with %d reads, %d writes: %v", len(result.Reads), len(result.Writes), result.Writes)
 	return result
 }
 
@@ -430,14 +429,5 @@ func (d *DualStateDB) Logs() []state.Log {
 	d.logger.Debugf("Logs: called")
 	result := d.snapshotDB.Logs()
 	d.logger.Debugf("Logs: returning result len=%d", len(result))
-	return result
-}
-
-// Ops returns the recorded state operations from the SnapshotDB.
-// This is a SnapshotDB-specific method not part of vm.StateDB interface.
-func (d *DualStateDB) Ops() []StateOp {
-	d.logger.Debugf("Ops: called")
-	result := d.snapshotDB.Ops()
-	d.logger.Debugf("Ops: returning result len=%d", len(result))
 	return result
 }

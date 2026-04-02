@@ -22,6 +22,7 @@ import (
 
 	"github.com/hyperledger/fabric-x-evm/endorser"
 	sdk "github.com/hyperledger/fabric-x-sdk"
+	"github.com/hyperledger/fabric-x-sdk/blocks"
 	"github.com/hyperledger/fabric-x-sdk/endorsement"
 	"github.com/hyperledger/fabric-x-sdk/network"
 	"github.com/hyperledger/fabric-x-sdk/state"
@@ -140,6 +141,14 @@ func (sp *StatePrimer) SetAccount(addr common.Address, nonce *uint64, code []byt
 	return sp
 }
 
+// AllocEntry represents a single account entry in a genesis allocation JSON file.
+type AllocEntry struct {
+	Balance string            `json:"balance"`
+	Code    string            `json:"code"`
+	Nonce   string            `json:"nonce"`
+	Storage map[string]string `json:"storage"`
+}
+
 // LoadFromJSON loads state priming operations from a JSON file.
 // The JSON format matches the AllocEntry structure used in genesis files.
 func (sp *StatePrimer) LoadFromJSON(jsonFilePath string) (*StatePrimer, error) {
@@ -207,7 +216,6 @@ func (sp *StatePrimer) Commit(ctx context.Context) error {
 		sp.namespace,
 		sp.nsVersion,
 		[][]byte{[]byte("prime")},
-		nil,
 	)
 	if err != nil {
 		return err
@@ -233,6 +241,12 @@ func (sp *StatePrimer) Commit(ctx context.Context) error {
 		Responses: presps,
 		Proposal:  inv.Proposal,
 	})
+}
+
+// Writes returns the ReadWriteSet of all state changes recorded since the last Reset.
+// Safe to call after Commit — the simulation store is not cleared by Commit.
+func (sp *StatePrimer) Writes() blocks.ReadWriteSet {
+	return sp.sim.Result()
 }
 
 // Reset creates a new simulation store, discarding all uncommitted changes.

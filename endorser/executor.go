@@ -58,11 +58,9 @@ func NewEVMEngine(namespace string, db state.ReadStore, evmConfig *EVMConfig, mo
 	}
 }
 
-// SetEthStateDB sets the ethStateDB for the EVMEngine. This allows reusing a primed ethStateDB.
+// SetEthStateDB sets the ethStateDB for the EVMEngine.
 func (e *EVMEngine) SetEthStateDB(ethStateDB *ethstate.StateDB) {
-	if ethStateDB != nil {
-		e.ethStateDB = ethStateDB
-	}
+	e.ethStateDB = ethStateDB
 }
 
 // GetEthStateDB returns the ethStateDB from the EVMEngine.

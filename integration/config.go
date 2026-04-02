@@ -73,6 +73,7 @@ func FabricSamplesConfig(testdataDir string) config.Config {
 			SignerMSPDir: filepath.Join(orgsDir, "peerOrganizations/org1.example.com/users/User1@org1.example.com/msp"),
 			SignerMSPID:  "Org1MSP",
 			DbConnStr:    "file:blocks?mode=memory&cache=shared",
+			TrieDBPath:   "",
 			// DbConnStr:      "file:../testdata/blocks.db",
 			SubmitWaitTime: 2200 * time.Millisecond,
 			SyncPeerAddr:   "localhost:7051",
@@ -141,7 +142,7 @@ func XTestCommitterConfig() config.Config {
 			SignerMSPDir:   filepath.Join(org1, "users", "User1@org1.example.com", "msp"),
 			SignerMSPID:    "Org1MSP",
 			DbConnStr:      "file:blocks?mode=memory&cache=shared",
-			SubmitWaitTime: 2200 * time.Millisecond,
+			SubmitWaitTime: 200 * time.Millisecond,
 			SyncPeerAddr:   "127.0.0.1:4001",
 			SyncPeerTLS:    "", // No TLS for X test committer
 			SyncTimeout:    10 * time.Second,

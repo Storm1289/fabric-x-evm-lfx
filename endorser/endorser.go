@@ -49,7 +49,7 @@ func New(engine *EVMEngine, builder endorsement.Builder) (*Endorser, error) {
 	}, nil
 }
 
-// SetEthStateDB sets the ethStateDB on the underlying EVMEngine. This allows reusing a primed ethStateDB.
+// SetEthStateDB sets the ethStateDB on the underlying EVMEngine.
 func (f *Endorser) SetEthStateDB(ethStateDB *ethstate.StateDB) {
 	f.engine.SetEthStateDB(ethStateDB)
 }

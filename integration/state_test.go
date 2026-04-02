@@ -112,5 +112,3 @@ func withTrace(t *testing.T, test *StateTest, subtest StateSubtest, testFunc fun
 	// Test failed
 	t.Error(err)
 }
-
-// Made with Bob

@@ -8,7 +8,6 @@ package app
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log"
 	"net/http"
@@ -18,6 +17,12 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/rpc"
+	sdk "github.com/hyperledger/fabric-x-sdk"
+	"github.com/hyperledger/fabric-x-sdk/blocks"
+	"github.com/hyperledger/fabric-x-sdk/blocks/fabric"
+	"github.com/hyperledger/fabric-x-sdk/identity"
+	"github.com/hyperledger/fabric-x-sdk/network"
+	nfab "github.com/hyperledger/fabric-x-sdk/network/fabric"
 	"golang.org/x/sync/errgroup"
 	_ "modernc.org/sqlite"
 
@@ -28,14 +33,6 @@ import (
 	"github.com/hyperledger/fabric-x-evm/gateway/api"
 	"github.com/hyperledger/fabric-x-evm/gateway/config"
 	"github.com/hyperledger/fabric-x-evm/gateway/core"
-	"github.com/hyperledger/fabric-x-evm/gateway/storage"
-	sdk "github.com/hyperledger/fabric-x-sdk"
-	"github.com/hyperledger/fabric-x-sdk/blocks"
-	"github.com/hyperledger/fabric-x-sdk/blocks/fabric"
-	"github.com/hyperledger/fabric-x-sdk/identity"
-	"github.com/hyperledger/fabric-x-sdk/network"
-	nfab "github.com/hyperledger/fabric-x-sdk/network/fabric"
-	_ "modernc.org/sqlite"
 )
 
 // App represents the gateway application with all its components.
@@ -44,7 +41,7 @@ type App struct {
 	endorserSyncs []*network.Synchronizer
 	gwSync        *network.Synchronizer
 	submitter     core.Submitter
-	gwDB          *sql.DB
+	chain         *core.Chain
 	rpcServer     *rpc.Server
 	httpServer    *http.Server
 }
@@ -94,11 +91,6 @@ func New(cfg config.Config) (*App, error) {
 		return nil, fmt.Errorf("failed to create endorsement client: %w", err)
 	}
 
-	gwDB, err := newSqlite(cfg.Gateway.DbConnStr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create gateway database: %w", err)
-	}
-
 	orderers := make([]network.OrdererConf, len(cfg.Gateway.Orderers))
 	for i, o := range cfg.Gateway.Orderers {
 		orderers[i] = network.OrdererConf{
@@ -107,23 +99,23 @@ func New(cfg config.Config) (*App, error) {
 		}
 	}
 
-	submitter, err := network.NewSubmitter(orderers, nfab.NewTxPackager(gwSigner), cfg.Gateway.SubmitWaitTime)
+	submitter, err := network.NewSubmitter(orderers, nfab.NewTxPackager(gwSigner), cfg.Gateway.SubmitWaitTime, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create submitter: %w", err)
 	}
 
-	blockStore := storage.NewStore(gwDB)
-	if err := blockStore.Init(); err != nil {
-		return nil, fmt.Errorf("failed to initialize block store: %w", err)
+	chain, err := core.NewChain(cfg.Gateway.DbConnStr, cfg.Gateway.TrieDBPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create chain: %w", err)
 	}
 
-	gateway, err := core.New(ec, submitter, blockStore, cfg.Network.ChainID)
+	gateway, err := core.New(ec, submitter, chain, cfg.Network.ChainID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create gateway: %w", err)
 	}
 
-	processor := blocks.NewProcessor(fabric.NewBlockParser(logger), []blocks.BlockHandler{core.NewEthBlockPersister(blockStore)})
-	gwSync, err := network.NewSynchronizer(blockStore, cfg.Network.Channel, cfg.Gateway.SyncPeerAddr, cfg.Gateway.SyncPeerTLS, gwSigner, processor, logger)
+	processor := blocks.NewProcessor(fabric.NewBlockParser(logger), []blocks.BlockHandler{chain})
+	gwSync, err := network.NewSynchronizer(chain, cfg.Network.Channel, cfg.Gateway.SyncPeerAddr, cfg.Gateway.SyncPeerTLS, gwSigner, processor, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create gateway synchronizer: %w", err)
 	}
@@ -138,7 +130,7 @@ func New(cfg config.Config) (*App, error) {
 		endorserSyncs: endorserSyncs,
 		gwSync:        gwSync,
 		submitter:     submitter,
-		gwDB:          gwDB,
+		chain:         chain,
 		rpcServer:     rpcServer,
 		httpServer:    nil, // Will be set when HTTP server starts
 	}, nil
@@ -197,7 +189,6 @@ func (a *App) Run(ctx context.Context) error {
 
 // Shutdown performs graceful shutdown of all application components.
 func (a *App) Shutdown() error {
-	// Create a separate timeout context for shutdown operations
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -219,27 +210,14 @@ func (a *App) Shutdown() error {
 		log.Println("submitter closed")
 	}
 
-	// Close database
-	log.Println("closing database...")
-	if err := a.gwDB.Close(); err != nil {
-		log.Printf("database close error: %v", err)
+	// Close chain (trie + database)
+	log.Println("closing chain...")
+	if err := a.chain.Close(); err != nil {
+		log.Printf("chain close error: %v", err)
 	} else {
-		log.Println("database closed")
+		log.Println("chain closed")
 	}
 
 	log.Println("graceful shutdown complete")
 	return nil
-}
-
-// newSqlite creates a new SQLite database connection with appropriate settings.
-func newSqlite(connStr string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", connStr)
-	if err != nil {
-		return nil, err
-	}
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-	db.SetConnMaxLifetime(0)
-
-	return db, nil
 }
