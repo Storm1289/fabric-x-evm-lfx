@@ -7,6 +7,7 @@ SPDX-License-Identifier: LGPL-3.0-or-later
 package integration
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"math/big"
@@ -14,7 +15,10 @@ import (
 	"sync"
 	"testing"
 
+	ethereum "github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/tests"
 	"github.com/hyperledger/fabric-x-evm/endorser"
 	"github.com/hyperledger/fabric-x-evm/integration/contracts"
@@ -72,6 +76,11 @@ var cases = []testCase{
 	{
 		name:  "nonce_validation",
 		fn:    testNonceValidation,
+		nodes: 2,
+	},
+	{
+		name:  "query_validation",
+		fn:    testQueryValidation,
 		nodes: 2,
 	},
 }
@@ -767,5 +776,118 @@ func testUniswapFactory(t *testing.T, th *TestHarness) {
 
 	if reserve0After.Cmp(reserve0) == 0 && reserve1After.Cmp(reserve1) == 0 {
 		t.Fatal("expected reserves to change after swap")
+	}
+}
+
+// testQueryValidation asserts every read endpoint returns coherent data after a deploy + call.
+func testQueryValidation(t *testing.T, th *TestHarness) {
+	node := th.Gateways[0]
+	ec, err := NewNativeEthClient(node)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	counter, err := NewEthClient(contracts.CounterMetaData, th.ethChainConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deployTx, contractAddr, err := counter.txForDeploy(t.Context(), node, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ec.SendTransaction(t.Context(), deployTx); err != nil {
+		t.Fatal(err)
+	}
+	waitForCommitT(t, ec, deployTx)
+
+	callTx, err := counter.TxForCall(t.Context(), node, &contractAddr, "increment", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ec.SendTransaction(t.Context(), callTx); err != nil {
+		t.Fatal(err)
+	}
+	waitForCommitT(t, ec, callTx)
+
+	sender := counter.Address()
+
+	cases := []struct {
+		name   string
+		tx     *types.Transaction
+		isCall bool
+	}{
+		{name: "deploy", tx: deployTx, isCall: false},
+		{name: "call", tx: callTx, isCall: true},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gotTx, isPending, err := ec.TransactionByHash(t.Context(), c.tx.Hash())
+			if err != nil {
+				t.Fatalf("TransactionByHash: %v", err)
+			}
+			if gotTx == nil {
+				t.Fatal("TransactionByHash returned nil for a committed tx")
+			}
+			// TODO: flip once #116 is fixed.
+			if isPending {
+				t.Errorf("expected isPending=false, got true")
+			}
+
+			gotJSON, err := gotTx.MarshalJSON()
+			if err != nil {
+				t.Fatalf("MarshalJSON(got): %v", err)
+			}
+			wantJSON, err := c.tx.MarshalJSON()
+			if err != nil {
+				t.Fatalf("MarshalJSON(want): %v", err)
+			}
+			if !bytes.Equal(gotJSON, wantJSON) {
+				t.Errorf("tx JSON mismatch:\n got:  %s\n want: %s", gotJSON, wantJSON)
+			}
+
+			receipt, err := ec.TransactionReceipt(t.Context(), c.tx.Hash())
+			if err != nil {
+				t.Fatalf("TransactionReceipt: %v", err)
+			}
+			if receipt.Status != types.ReceiptStatusSuccessful {
+				t.Errorf("expected receipt.Status=%d, got %d", types.ReceiptStatusSuccessful, receipt.Status)
+			}
+
+			if !c.isCall {
+				expected := crypto.CreateAddress(sender, c.tx.Nonce())
+				if receipt.ContractAddress != expected {
+					t.Errorf("receipt.ContractAddress mismatch: got %s, want %s", receipt.ContractAddress, expected)
+				}
+				if expected != contractAddr {
+					t.Errorf("computed contract addr drifted from txForDeploy: got %s, want %s", expected, contractAddr)
+				}
+			}
+
+			byHashIdx, err := ec.TransactionInBlock(t.Context(), receipt.BlockHash, receipt.TransactionIndex)
+			if err != nil {
+				t.Fatalf("TransactionInBlock: %v", err)
+			}
+			if byHashIdx == nil || byHashIdx.Hash() != c.tx.Hash() {
+				t.Errorf("by-(blockHash,index) lookup did not return the same tx")
+			}
+			// TODO: add ec.BlockByHash / ec.BlockByNumber assertions once the gateway
+			// returns header fields (logsBloom, extraData) as 0x-prefixed hex — today
+			// they are bare strings and go-ethereum's RPC decoder rejects them.
+		})
+	}
+
+	var unknown common.Hash
+	unknown[0] = 0xde
+	gotTx, isPending, err := ec.TransactionByHash(t.Context(), unknown)
+	if err != nil && err != ethereum.NotFound {
+		t.Fatalf("TransactionByHash(unknown): %v", err)
+	}
+	if gotTx != nil {
+		t.Errorf("expected nil for unknown hash, got %+v", gotTx)
+	}
+	if isPending {
+		t.Error("expected isPending=false for unknown hash")
 	}
 }
