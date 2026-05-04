@@ -190,7 +190,7 @@ func (api *EthAPI) SendRawTransaction(ctx context.Context, input hexutil.Bytes) 
 		return common.Hash{}, rpcerr.InvalidParams("invalid raw transaction: %v", err)
 	}
 	if err := api.b.SendTransaction(ctx, tx); err != nil {
-		return common.Hash{}, err
+		return common.Hash{}, classifyValidationError(err)
 	}
 	return tx.Hash(), nil
 }

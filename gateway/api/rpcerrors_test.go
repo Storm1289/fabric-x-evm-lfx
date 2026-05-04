@@ -4,7 +4,7 @@ Copyright IBM Corp. All Rights Reserved.
 SPDX-License-Identifier: LGPL-3.0-or-later
 */
 
-package core
+package api
 
 import (
 	"errors"
@@ -15,6 +15,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/txpool"
 	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/hyperledger/fabric-x-evm/gateway/api/rpcerr"
+	"github.com/hyperledger/fabric-x-evm/gateway/domain"
 )
 
 func TestClassifyValidationError_NilReturnsNil(t *testing.T) {
@@ -25,7 +26,7 @@ func TestClassifyValidationError_NilReturnsNil(t *testing.T) {
 
 func TestClassifyValidationError_NonceLookupIsInternal(t *testing.T) {
 	underlying := errors.New("ledger unavailable")
-	wrapped := fmt.Errorf("%w: %w", errNonceLookup, underlying)
+	wrapped := fmt.Errorf("%w: %w", domain.ErrNonceLookup, underlying)
 
 	got := classifyValidationError(wrapped)
 
@@ -43,7 +44,7 @@ func TestClassifyValidationError_TxRejectionsMapToTxRejected(t *testing.T) {
 		name string
 		err  error
 	}{
-		{"unprotected", errUnprotectedTx},
+		{"unprotected", domain.ErrUnprotectedTx},
 		{"nonce too low", fmt.Errorf("%w: next nonce 5, tx nonce 1", ethcore.ErrNonceTooLow)},
 		{"intrinsic gas", ethcore.ErrIntrinsicGas},
 		{"insufficient funds", ethcore.ErrInsufficientFunds},
