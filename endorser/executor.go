@@ -184,6 +184,10 @@ func (e *EVMEngine) newExecutor(blockInfo *utils.BlockInfo) (*Executor, error) {
 		reader.Close()
 		return nil, err
 	}
+
+	// in case logging is required - consider enabling programmatically
+	// sdl := NewStateDBLogger(stateDB)
+	// flogging.ActivateSpec("DEBUG")
 	return NewExecutor(stateDB, reader, blockInfo, e.evmConfig)
 }
 
