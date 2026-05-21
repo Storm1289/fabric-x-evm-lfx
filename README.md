@@ -44,6 +44,13 @@ You can now use the system as any other EVM-style chain! Backed by Fabric-X.
 > minute or two. Subsequent starts are fast. To run without the block explorer,
 > use `make start-node` instead.
 
+> [!NOTE]
+> **Rootless Podman**: pass `DOCKER=podman COMPOSE="podman compose"` to any
+> `make` target that starts or stops containers:
+> ```shell
+> make start DOCKER=podman COMPOSE="podman compose"
+> ```
+
 ### Deploy a token and interact via MetaMask
 
 You'll need:
@@ -71,13 +78,13 @@ open the extension → your account → Add Wallet → Private Key, and enter
 Deploy an ERC-20 token by choosing a name and symbol:
 
 ```shell
-make demo-deploy NAME="Digital Euro" SYMBOL=DEUR
+make demo-deploy NAME="Digital Euro" SYMBOL=EURX
 ```
 
 The explorer URL is printed immediately:
 
 ```
-Deployed Digital Euro (DEUR): http://localhost:8000/address/0x...
+Deployed Digital Euro (EURX): http://localhost:8000/address/0x...
 ```
 
 Open the URL. Scroll to the bottom and click **"Add Fabric-X EVM"** 

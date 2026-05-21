@@ -1,0 +1,52 @@
+name: fabric-x-evm
+
+# Fabric-X infrastructure layer: the test committer node.
+# Both make start-node and make start bring this up first.
+# EVM namespace init is run separately by the Makefile once the committer is healthy.
+
+services:
+  # For local development, we use the Fabric-X test committer.
+  # For a real deployment, see:
+  # https://github.com/LF-Decentralized-Trust-labs/fabric-x-ansible-collection
+  test-committer:
+    image: docker.io/hyperledger/fabric-x-committer-test-node:0.1.9
+    pull_policy: missing
+    restart: unless-stopped
+    container_name: test-committer
+    command: run db orderer committer
+    ports:
+      - "4001:4001"
+      - "2110:2110"
+      - "2114:2114"
+      - "2117:2117"
+      - "7001:7001"
+      - "7050:7050"
+      - "5433:5433"
+    volumes:
+      - ./testdata/crypto:/root/config/crypto:ro,Z
+      - ./testdata/crypto/sc-genesis-block.proto.bin:/root/config/sc-genesis-block.proto.bin:ro,Z
+      - ./testdata/crypto/sc-genesis-block.proto.bin:/root/artifacts/config-block.pb.bin:ro,Z
+      - ./testdata/crypto/peerOrganizations/Org1/peers/committer.org1.example.com/tls/server.crt:/server-certs/public-key.pem:ro,Z
+      - ./testdata/crypto/peerOrganizations/Org1/peers/committer.org1.example.com/tls/server.key:/server-certs/private-key.pem:ro,Z
+      - ./testdata/crypto/peerOrganizations/Org1/peers/committer.org1.example.com/tls/ca.crt:/server-certs/ca-certificate.pem:ro,Z
+      - ./testdata/crypto/peerOrganizations/Org1/peers/committer.org1.example.com/tls/server.crt:/client-certs/public-key.pem:ro,Z
+      - ./testdata/crypto/peerOrganizations/Org1/peers/committer.org1.example.com/tls/server.key:/client-certs/private-key.pem:ro,Z
+      - ./testdata/crypto/peerOrganizations/Org1/peers/committer.org1.example.com/tls/ca.crt:/client-certs/ca-certificate.pem:ro,Z
+    environment:
+      SC_SIDECAR_ORDERER_IDENTITY_MSP_DIR: /root/config/crypto/peerOrganizations/Org1/peers/committer.org1.example.com/msp
+      SC_SIDECAR_ORDERER_IDENTITY_MSP_ID: Org1MSP
+      SC_SIDECAR_ORDERER_CHANNEL_ID: mychannel
+      SC_SIDECAR_ORDERER_SIGNED_ENVELOPES: "true"
+      SC_QUERY_SERVICE_SERVER_ENDPOINT: ":7001"
+      SC_ORDERER_BLOCK_SIZE: "1"
+    healthcheck:
+      test: [ "CMD-SHELL", "nc -z localhost 7001" ]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+    networks:
+      default:
+        aliases:
+          - committer # matches the TLS certificate SAN
+

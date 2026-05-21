@@ -6,6 +6,12 @@ GID := $(shell id -g)
 export UID
 export GID
 
+# Container runtime — override for rootless Podman:
+#   make start DOCKER=podman COMPOSE="podman compose"
+# Note: build-image requires docker buildx (or podman buildx).
+DOCKER  ?= docker
+COMPOSE ?= docker compose
+
 .PHONY: build
 build:
 	go build -o bin/fxevm ./cmd/fxevm
@@ -20,7 +26,7 @@ build-release:
 
 .PHONY: build-image
 build-image: build-release
-	docker buildx build \
+	$(DOCKER) buildx build \
 		--file Dockerfile.release \
 		--load \
 		--build-arg VERSION=dev \
@@ -42,7 +48,7 @@ unit-tests:
 
 .PHONY: pre-pull-images
 pre-pull-images:
-	@docker pull hyperledger/fabric-ccenv:$(FABRIC_VERSION) || echo "Warning: Failed to pull fabric-ccenv"
+	@$(DOCKER) pull hyperledger/fabric-ccenv:$(FABRIC_VERSION) || echo "Warning: Failed to pull fabric-ccenv"
 
 .PHONY: integration-tests
 integration-tests: pre-pull-images
@@ -61,25 +67,7 @@ clean-x:
 .PHONY: start-x
 start-x:
 	@if nc -z localhost 7050 2>/dev/null; then echo "Error: port 7050 is already in use — stop any running Fabric orderer before starting."; exit 1; fi
-	@if [ ! -f testdata/crypto/sc-genesis-block.proto.bin ]; then echo "Please run 'make init-x' first."; exit 1; fi
-	@docker run -d --rm -it --name fabric-x-committer-test-node \
-		-p 4001:4001 -p 2110:2110 -p 2114:2114 -p 2117:2117 -p 7001:7001 -p 7050:7050 -p 5433:5433 \
-		-v "$(PWD)/testdata/crypto:/root/config/crypto" \
-		-v "$(PWD)/testdata/crypto/sc-genesis-block.proto.bin:/root/config/sc-genesis-block.proto.bin" \
-		-v "$(PWD)/testdata/crypto/sc-genesis-block.proto.bin:/root/artifacts/config-block.pb.bin" \
-		-v "$(PWD)/testdata/crypto/peerOrganizations/Org1/peers/committer.org1.example.com/tls/server.crt:/server-certs/public-key.pem" \
-		-v "$(PWD)/testdata/crypto/peerOrganizations/Org1/peers/committer.org1.example.com/tls/server.key:/server-certs/private-key.pem" \
-		-v "$(PWD)/testdata/crypto/peerOrganizations/Org1/peers/committer.org1.example.com/tls/ca.crt:/server-certs/ca-certificate.pem" \
-		-v "$(PWD)/testdata/crypto/peerOrganizations/Org1/peers/committer.org1.example.com/tls/server.crt:/client-certs/public-key.pem" \
-		-v "$(PWD)/testdata/crypto/peerOrganizations/Org1/peers/committer.org1.example.com/tls/server.key:/client-certs/private-key.pem" \
-		-v "$(PWD)/testdata/crypto/peerOrganizations/Org1/peers/committer.org1.example.com/tls/ca.crt:/client-certs/ca-certificate.pem" \
-		-e SC_SIDECAR_ORDERER_IDENTITY_MSP_DIR=/root/config/crypto/peerOrganizations/Org1/peers/committer.org1.example.com/msp \
-		-e SC_SIDECAR_ORDERER_IDENTITY_MSP_ID=Org1MSP \
-		-e SC_SIDECAR_ORDERER_CHANNEL_ID=mychannel \
-		-e SC_SIDECAR_ORDERER_SIGNED_ENVELOPES=true \
-		-e SC_QUERY_SERVICE_SERVER_ENDPOINT=:7001 \
-		-e SC_ORDERER_BLOCK_SIZE=1 \
-		docker.io/hyperledger/fabric-x-committer-test-node:0.1.9 run db orderer committer
+	@$(COMPOSE) -f compose.fabric-x.yml up -d
 	@while ! nc -z localhost 7001 2>/dev/null; do sleep 1; done
 	@go tool fxconfig namespace create basic --policy="OR('Org1MSP.member')" --endorse --submit --wait --config=testdata/fxconfig.yaml
 
@@ -89,7 +77,7 @@ test-x:
 
 .PHONY: stop-x
 stop-x:
-	@docker rm -f fabric-x-committer-test-node
+	@$(COMPOSE) -f compose.fabric-x.yml down
 
 .PHONY: start-fablo
 start-fablo:
@@ -136,18 +124,27 @@ eth-tests-slow-legacy:
 .PHONY: start-node
 start-node:
 	@if nc -z localhost 7050 2>/dev/null; then echo "Error: port 7050 is already in use — stop any running Fabric orderer before starting."; exit 1; fi
-	@docker compose --env-file blockscout.env up -d --build
+	@$(COMPOSE) -f compose.fabric-x.yml up -d
+	@echo "Waiting for committer to be ready..."
+	@while ! nc -z localhost 7001 2>/dev/null; do sleep 1; done
+	@$(DOCKER) run --rm --network fabric-x-evm_default \
+		--user "$(UID):$(GID)" \
+		-v "$(PWD)/testdata/fxconfig-docker.yaml:/testdata/fxconfig-docker.yaml:ro,Z" \
+		-v "$(PWD)/testdata/crypto:/testdata/crypto:ro,Z" \
+		docker.io/hyperledger/fabric-x-tools:latest \
+		fxconfig namespace create basic --policy="OR('Org1MSP.member')" \
+		--endorse --submit --wait --config=/testdata/fxconfig-docker.yaml
+	@$(COMPOSE) up -d --build gateway
 
 .PHONY: start
-start: blockscout.env
-	@if nc -z localhost 7050 2>/dev/null; then echo "Error: port 7050 is already in use — stop any running Fabric orderer before starting."; exit 1; fi
-	@if [ ! -f testdata/crypto/sc-genesis-block.proto.bin ]; then echo "Please run 'make init-x' first."; exit 1; fi
-	@docker compose --profile explorer --env-file blockscout.env up -d --build
+start: start-node blockscout.env
+	@$(COMPOSE) --env-file blockscout.env up -d --build
 	@echo "Visit the block explorer at http://localhost:8000/ (might take a minute to load)"
 
 .PHONY: stop
-stop: blockscout.env
-	@docker compose --profile explorer --env-file blockscout.env down -v
+stop:
+	@$(COMPOSE) down -v
+	@$(COMPOSE) -f compose.fabric-x.yml down
 
 blockscout.env:
 	@echo "Generating $@..."

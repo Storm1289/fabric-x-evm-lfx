@@ -1,4 +1,4 @@
-FROM golang:1.26 AS build
+FROM docker.io/library/golang:1.26 AS build
 
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -6,7 +6,7 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -o /fxevm ./cmd/fxevm
 
-FROM busybox
+FROM docker.io/library/busybox
 
 COPY --from=build /fxevm /usr/local/bin/fxevm
 EXPOSE 8545
