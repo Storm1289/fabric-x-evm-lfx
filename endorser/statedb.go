@@ -45,9 +45,9 @@ import (
 	"github.com/ethereum/go-ethereum/core/stateless"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/core/types/bal"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
-	"github.com/ethereum/go-ethereum/trie/utils"
 	"github.com/ethereum/go-ethereum/triedb"
 	"github.com/ethereum/go-ethereum/triedb/hashdb"
 	"github.com/holiman/uint256"
@@ -518,7 +518,8 @@ func (s *StateDB) GetStorageRoot(addr common.Address) common.Hash {
 }
 
 // SelfDestruct marks an account as self-destructed.
-func (s *StateDB) SelfDestruct(addr common.Address) uint256.Int {
+// Return type changed in go-ethereum v1.17.3 from uint256.Int to no return.
+func (s *StateDB) SelfDestruct(addr common.Address) {
 	// Get the current balance before zeroing it
 	prevBalance := s.GetBalance(addr)
 
@@ -531,19 +532,8 @@ func (s *StateDB) SelfDestruct(addr common.Address) uint256.Int {
 	}
 
 	// Journal the self-destruct marker for HasSelfDestructed queries.
-	// This is needed because:
-	// 1. The EVM queries HasSelfDestructed to check if an account was self-destructed
-	// 2. The selfDestructEntry allows RevertToSnapshot to remove the address from
-	//    the selfDestructed map when reverting
 	s.journal = append(s.journal, selfDestructEntry{addr: addr})
 	s.selfDestructed[addr] = struct{}{}
-
-	return *prevBalance
-}
-
-// SelfDestruct6780 implements EIP-6780 self-destruct.
-func (s *StateDB) SelfDestruct6780(addr common.Address) (uint256.Int, bool) {
-	return *uint256.NewInt(0), false
 }
 
 // HasSelfDestructed checks if an account has self-destructed.
@@ -798,13 +788,22 @@ func (s *StateDB) Prepare(rules params.Rules, sender, coinbase common.Address, d
 	}
 }
 
-func (s *StateDB) PointCache() *utils.PointCache { return nil }
-
 func (s *StateDB) Witness() *stateless.Witness { return nil }
 
 func (s *StateDB) AccessEvents() *ethstate.AccessEvents { return nil }
 
-func (s *StateDB) Finalise(deleteEmptyObjects bool) {}
+func (s *StateDB) Finalise(deleteEmptyObjects bool) *bal.StateAccessList { return nil }
+
+// Touch accesses the state without returning anything (EIP-7928 access list tracking).
+func (s *StateDB) Touch(addr common.Address) {}
+
+// IsNewContract reports whether the contract at the given address was deployed
+// during the current transaction. Always false for this StateDB implementation.
+func (s *StateDB) IsNewContract(addr common.Address) bool { return false }
+
+// LogsForBurnAccounts returns logs emitted by burn accounts during the current transaction.
+// Not tracked separately in this implementation.
+func (s *StateDB) LogsForBurnAccounts() []*types.Log { return nil }
 
 // -------------------- Helper functions --------------------
 

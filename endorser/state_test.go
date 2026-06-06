@@ -61,9 +61,10 @@ func TestOpsReplayOnFreshDB(t *testing.T) {
 	db.SetState(contract, slot, val)
 
 	// Self-destruct ops (TODO: actually destroy the contract)
-	_ = db.SelfDestruct(contract)
+	// SelfDestruct signature changed in go-ethereum v1.17.3: no return value.
+	// SelfDestruct6780 was removed entirely (EIP-6780 logic folded into SelfDestruct).
+	db.SelfDestruct(contract)
 	assertEqual(t, "SelfDestruct", db.HasSelfDestructed(contract), true, true)
-	_, _ = db.SelfDestruct6780(contract)
 
 	// replay on fresh database
 	freshState, err := state.NewWriteDB(Channel, Db2)
