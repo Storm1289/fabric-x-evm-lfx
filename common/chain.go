@@ -41,7 +41,7 @@ func BuildChainConfig(chainID int64) *params.ChainConfig {
 		OsakaTime:               new(uint64(0)),
 		// VerkleTime: removed in go-ethereum v1.17.3. Post-Osaka features intentionally not enabled.
 		BlobScheduleConfig: params.DefaultBlobSchedule,
-		Ethash:                  new(params.EthashConfig),
-		Clique:                  nil,
+		Ethash:             new(params.EthashConfig),
+		Clique:             nil,
 	}
 }
