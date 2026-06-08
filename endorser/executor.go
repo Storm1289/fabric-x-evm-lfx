@@ -285,6 +285,9 @@ func CallMsgToMessage(msg ethereum.CallMsg, baseFee *big.Int, skipNonceCheck, sk
 		}
 		return uint256.MustFromBig(b)
 	}
+	// dup returns a fresh copy so the resulting Message never aliases the same
+	// uint256.Int across multiple fields. The EVM mutates these in-place.
+	dup := func(u *uint256.Int) *uint256.Int { return new(uint256.Int).Set(u) }
 
 	var (
 		gasPrice  *uint256.Int
@@ -294,14 +297,14 @@ func CallMsgToMessage(msg ethereum.CallMsg, baseFee *big.Int, skipNonceCheck, sk
 
 	if baseFee == nil {
 		// Legacy gas pricing
-		gasPrice = toU256(msg.GasPrice)
-		gasFeeCap, gasTipCap = gasPrice, gasPrice
+		gp := toU256(msg.GasPrice)
+		gasPrice, gasFeeCap, gasTipCap = gp, dup(gp), dup(gp)
 	} else {
 		// EIP-1559 gas pricing
 		if msg.GasPrice != nil {
 			// Legacy gas field provided, convert to 1559 gas typing
-			gasPrice = toU256(msg.GasPrice)
-			gasFeeCap, gasTipCap = gasPrice, gasPrice
+			gp := toU256(msg.GasPrice)
+			gasPrice, gasFeeCap, gasTipCap = gp, dup(gp), dup(gp)
 		} else {
 			gasFeeCap = toU256(msg.GasFeeCap)
 			gasTipCap = toU256(msg.GasTipCap)
@@ -310,7 +313,7 @@ func CallMsgToMessage(msg ethereum.CallMsg, baseFee *big.Int, skipNonceCheck, sk
 			if !gasFeeCap.IsZero() || !gasTipCap.IsZero() {
 				gasPrice = new(uint256.Int).Add(gasTipCap, toU256(baseFee))
 				if gasPrice.Cmp(gasFeeCap) > 0 {
-					gasPrice = gasFeeCap
+					gasPrice = dup(gasFeeCap)
 				}
 			}
 		}
