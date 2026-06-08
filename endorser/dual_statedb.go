@@ -25,8 +25,8 @@ import (
 // the endorser implementation (Result, Logs).
 type ExtendedStateDB interface {
 	vm.StateDB
-	// GetStorageRoot is not part of vm.StateDB in go-ethereum v1.17.3,
-	// but our logger and dual-StateDB wrappers still need to expose it.
+	// GetStorageRoot is not part of vm.StateDB but our logger and dual-StateDB
+	// wrappers still need to expose it.
 	GetStorageRoot(addr common.Address) common.Hash
 	Result() blocks.ReadWriteSet
 	Logs() []Log
@@ -254,7 +254,6 @@ func (d *DualStateDB) SetTransientState(addr common.Address, key, value common.H
 }
 
 // SelfDestruct performs self-destruct in both state implementations.
-// Return type changed in go-ethereum v1.17.3 from uint256.Int to no return.
 func (d *DualStateDB) SelfDestruct(addr common.Address) {
 	d.logger.Debugf("SelfDestruct: addr=%s", addr.Hex())
 	d.ethStateDB.SelfDestruct(addr)
@@ -269,8 +268,6 @@ func (d *DualStateDB) HasSelfDestructed(addr common.Address) bool {
 	d.logger.Debugf("HasSelfDestructed: output result=%t", result)
 	return result
 }
-
-// SelfDestruct6780 removed in go-ethereum v1.17.3 (EIP-6780 logic folded into SelfDestruct).
 
 // Exist checks if an account exists in either the ethStateDB
 func (d *DualStateDB) Exist(addr common.Address) bool {

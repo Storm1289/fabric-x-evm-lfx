@@ -279,42 +279,36 @@ func (h *Executor) Close() error {
 // If baseFee is nil, legacy gas pricing is used.
 // skipNonceCheck and skipTxCheck control whether nonce and EOA checks should be skipped.
 func CallMsgToMessage(msg ethereum.CallMsg, baseFee *big.Int, skipNonceCheck, skipTxCheck bool) *core.Message {
+	toU256 := func(b *big.Int) *uint256.Int {
+		if b == nil {
+			return new(uint256.Int)
+		}
+		return uint256.MustFromBig(b)
+	}
+
 	var (
-		gasPrice  *big.Int
-		gasFeeCap *big.Int
-		gasTipCap *big.Int
+		gasPrice  *uint256.Int
+		gasFeeCap *uint256.Int
+		gasTipCap *uint256.Int
 	)
 
 	if baseFee == nil {
 		// Legacy gas pricing
-		if msg.GasPrice != nil {
-			gasPrice = msg.GasPrice
-		} else {
-			gasPrice = new(big.Int)
-		}
+		gasPrice = toU256(msg.GasPrice)
 		gasFeeCap, gasTipCap = gasPrice, gasPrice
 	} else {
 		// EIP-1559 gas pricing
 		if msg.GasPrice != nil {
 			// Legacy gas field provided, convert to 1559 gas typing
-			gasPrice = msg.GasPrice
+			gasPrice = toU256(msg.GasPrice)
 			gasFeeCap, gasTipCap = gasPrice, gasPrice
 		} else {
-			// Use 1559 gas fields
-			if msg.GasFeeCap != nil {
-				gasFeeCap = msg.GasFeeCap
-			} else {
-				gasFeeCap = new(big.Int)
-			}
-			if msg.GasTipCap != nil {
-				gasTipCap = msg.GasTipCap
-			} else {
-				gasTipCap = new(big.Int)
-			}
+			gasFeeCap = toU256(msg.GasFeeCap)
+			gasTipCap = toU256(msg.GasTipCap)
 			// Calculate effective gas price for EVM execution
-			gasPrice = new(big.Int)
-			if gasFeeCap.BitLen() > 0 || gasTipCap.BitLen() > 0 {
-				gasPrice = new(big.Int).Add(gasTipCap, baseFee)
+			gasPrice = new(uint256.Int)
+			if !gasFeeCap.IsZero() || !gasTipCap.IsZero() {
+				gasPrice = new(uint256.Int).Add(gasTipCap, toU256(baseFee))
 				if gasPrice.Cmp(gasFeeCap) > 0 {
 					gasPrice = gasFeeCap
 				}
@@ -322,33 +316,18 @@ func CallMsgToMessage(msg ethereum.CallMsg, baseFee *big.Int, skipNonceCheck, sk
 		}
 	}
 
-	// Handle nil Value
-	value := msg.Value
-	if value == nil {
-		value = new(big.Int)
-	}
-
-	// Handle nil blob gas fee cap
-	blobGasFeeCap := msg.BlobGasFeeCap
-	if blobGasFeeCap == nil {
-		blobGasFeeCap = new(big.Int)
-	}
-
-	// core.Message gas/value fields became *uint256.Int in go-ethereum v1.17.3.
-	// Convert from the *big.Int values built above. MustFromBig panics on overflow,
-	// which we treat as a programmer error since all callers fit within 256 bits.
 	return &core.Message{
 		From:                  msg.From,
 		To:                    msg.To,
-		Value:                 uint256.MustFromBig(value),
+		Value:                 toU256(msg.Value),
 		Nonce:                 0, // CallMsg doesn't have a nonce
 		GasLimit:              msg.Gas,
-		GasPrice:              uint256.MustFromBig(gasPrice),
-		GasFeeCap:             uint256.MustFromBig(gasFeeCap),
-		GasTipCap:             uint256.MustFromBig(gasTipCap),
+		GasPrice:              gasPrice,
+		GasFeeCap:             gasFeeCap,
+		GasTipCap:             gasTipCap,
 		Data:                  msg.Data,
 		AccessList:            msg.AccessList,
-		BlobGasFeeCap:         uint256.MustFromBig(blobGasFeeCap),
+		BlobGasFeeCap:         toU256(msg.BlobGasFeeCap),
 		BlobHashes:            msg.BlobHashes,
 		SetCodeAuthorizations: msg.AuthorizationList,
 		SkipNonceChecks:       skipNonceCheck,
@@ -413,7 +392,6 @@ func (h *Executor) Execute(msg *core.Message) ([]byte, error) {
 	}
 
 	// Free gas: zero all prices so buyGas never requires ETH balance from the sender.
-	// Gas fields became *uint256.Int in go-ethereum v1.17.3.
 	msg.GasPrice = new(uint256.Int)
 	msg.GasFeeCap = new(uint256.Int)
 	msg.GasTipCap = new(uint256.Int)

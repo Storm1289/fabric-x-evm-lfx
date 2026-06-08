@@ -180,8 +180,6 @@ func (l *EthStateDBLogger) HasSelfDestructed(addr common.Address) bool {
 	return result
 }
 
-// SelfDestruct6780 removed in go-ethereum v1.17.3 (EIP-6780 logic folded into SelfDestruct).
-
 func (l *EthStateDBLogger) Exist(addr common.Address) bool {
 	l.logger.Debugf("Exist: addr=%s", addr.Hex())
 	result := l.inner.Exist(addr)

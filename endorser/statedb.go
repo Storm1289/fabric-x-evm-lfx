@@ -807,8 +807,9 @@ func (s *StateDB) AccessEvents() *ethstate.AccessEvents { return nil }
 
 func (s *StateDB) Finalise(deleteEmptyObjects bool) *bal.StateAccessList { return nil }
 
-// Touch accesses the state without returning anything (EIP-7928 access list tracking).
-func (s *StateDB) Touch(addr common.Address) {}
+func (s *StateDB) Touch(addr common.Address) {
+	// It doesn't affect the control flow, so we don't add a read dependency to the read/write set.
+}
 
 // IsNewContract reports whether addr was created in the current transaction.
 func (s *StateDB) IsNewContract(addr common.Address) bool {

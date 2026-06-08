@@ -39,7 +39,7 @@ func BuildChainConfig(chainID int64) *params.ChainConfig {
 		CancunTime:              new(uint64(0)),
 		PragueTime:              new(uint64(0)),
 		OsakaTime:               new(uint64(0)),
-		// VerkleTime: removed in go-ethereum v1.17.3. Post-Osaka features intentionally not enabled.
+		// Post-Osaka fork features intentionally not enabled.
 		BlobScheduleConfig: params.DefaultBlobSchedule,
 		Ethash:             new(params.EthashConfig),
 		Clique:             nil,

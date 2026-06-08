@@ -534,7 +534,6 @@ func (tx *stTransaction) toMessage(ps stPostState, baseFee *big.Int) (*core.Mess
 		}
 	}
 
-	// core.Message gas/value fields became *uint256.Int in go-ethereum v1.17.3.
 	msg := &core.Message{
 		From:                  from,
 		To:                    to,
@@ -590,8 +589,7 @@ func makePreState(db ethdb.Database, accounts types.GenesisAlloc, snapshotter bo
 		}
 		snaps, _ = snapshot.New(snapconfig, db, trieDB, root)
 	}
-	// state.NewDatabase signature changed in go-ethereum v1.17.3: second arg is
-	// now *state.CodeDB (not *snapshot.Tree). Pass nil to use the default code db.
+	// Pass nil for the default code db; snaps unused in the current signature.
 	_ = snaps
 	sdb = state.NewDatabase(trieDB, nil)
 	statedb, _ = state.New(root, sdb)
@@ -671,8 +669,7 @@ func makePreStateWithDualState(db ethdb.Database, accounts types.GenesisAlloc, s
 		}
 		snaps, _ = snapshot.New(snapconfig, db, trieDB, root)
 	}
-	// state.NewDatabase signature changed in go-ethereum v1.17.3: second arg is
-	// now *state.CodeDB (not *snapshot.Tree). Pass nil to use the default code db.
+	// Pass nil for the default code db; snaps unused in the current signature.
 	_ = snaps
 	sdb = state.NewDatabase(trieDB, nil)
 	ethStateDB, _ = state.New(root, sdb)
