@@ -56,6 +56,7 @@
 ../testdata/ethereum-tests/GeneralStateTests/VMTests/vmIOandFlowOperations/jumpToPush.json
 ../testdata/ethereum-tests/GeneralStateTests/VMTests/vmPerformance/loopMul.json
 ../testdata/ethereum-tests/GeneralStateTests/stCreate2/create2collisionStorageParis.json
+../testdata/ethereum-tests/GeneralStateTests/stCreate2/RevertInCreateInInitCreate2Paris.json
 ../testdata/ethereum-tests/GeneralStateTests/stExtCodeHash/dynamicAccountOverwriteEmpty_Paris.json
 ../testdata/ethereum-tests/GeneralStateTests/stRevertTest/RevertInCreateInInit_Paris.json
 ../testdata/ethereum-tests/GeneralStateTests/stSStoreTest/InitCollisionParis.json
