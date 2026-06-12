@@ -279,58 +279,73 @@ func (h *Executor) Close() error {
 // If baseFee is nil, legacy gas pricing is used.
 // skipNonceCheck and skipTxCheck control whether nonce and EOA checks should be skipped.
 func CallMsgToMessage(msg ethereum.CallMsg, baseFee *big.Int, skipNonceCheck, skipTxCheck bool) *core.Message {
-	toU256 := func(b *big.Int) *uint256.Int {
-		if b == nil {
-			return new(uint256.Int)
-		}
-		return uint256.MustFromBig(b)
-	}
-	// dup returns a fresh copy so the resulting Message never aliases the same
-	// uint256.Int across multiple fields. The EVM mutates these in-place.
-	dup := func(u *uint256.Int) *uint256.Int { return new(uint256.Int).Set(u) }
-
 	var (
-		gasPrice  *uint256.Int
-		gasFeeCap *uint256.Int
-		gasTipCap *uint256.Int
+		gasPrice  *big.Int
+		gasFeeCap *big.Int
+		gasTipCap *big.Int
 	)
 
 	if baseFee == nil {
 		// Legacy gas pricing
-		gp := toU256(msg.GasPrice)
-		gasPrice, gasFeeCap, gasTipCap = gp, dup(gp), dup(gp)
+		if msg.GasPrice != nil {
+			gasPrice = msg.GasPrice
+		} else {
+			gasPrice = new(big.Int)
+		}
+		gasFeeCap, gasTipCap = gasPrice, gasPrice
 	} else {
 		// EIP-1559 gas pricing
 		if msg.GasPrice != nil {
 			// Legacy gas field provided, convert to 1559 gas typing
-			gp := toU256(msg.GasPrice)
-			gasPrice, gasFeeCap, gasTipCap = gp, dup(gp), dup(gp)
+			gasPrice = msg.GasPrice
+			gasFeeCap, gasTipCap = gasPrice, gasPrice
 		} else {
-			gasFeeCap = toU256(msg.GasFeeCap)
-			gasTipCap = toU256(msg.GasTipCap)
+			// Use 1559 gas fields
+			if msg.GasFeeCap != nil {
+				gasFeeCap = msg.GasFeeCap
+			} else {
+				gasFeeCap = new(big.Int)
+			}
+			if msg.GasTipCap != nil {
+				gasTipCap = msg.GasTipCap
+			} else {
+				gasTipCap = new(big.Int)
+			}
 			// Calculate effective gas price for EVM execution
-			gasPrice = new(uint256.Int)
-			if !gasFeeCap.IsZero() || !gasTipCap.IsZero() {
-				gasPrice = new(uint256.Int).Add(gasTipCap, toU256(baseFee))
+			gasPrice = new(big.Int)
+			if gasFeeCap.BitLen() > 0 || gasTipCap.BitLen() > 0 {
+				gasPrice = new(big.Int).Add(gasTipCap, baseFee)
 				if gasPrice.Cmp(gasFeeCap) > 0 {
-					gasPrice = dup(gasFeeCap)
+					gasPrice = gasFeeCap
 				}
 			}
 		}
 	}
 
+	// Handle nil Value
+	value := msg.Value
+	if value == nil {
+		value = new(big.Int)
+	}
+
+	// Handle nil blob gas fee cap
+	blobGasFeeCap := msg.BlobGasFeeCap
+	if blobGasFeeCap == nil {
+		blobGasFeeCap = new(big.Int)
+	}
+
 	return &core.Message{
 		From:                  msg.From,
 		To:                    msg.To,
-		Value:                 toU256(msg.Value),
+		Value:                 uint256.MustFromBig(value),
 		Nonce:                 0, // CallMsg doesn't have a nonce
 		GasLimit:              msg.Gas,
-		GasPrice:              gasPrice,
-		GasFeeCap:             gasFeeCap,
-		GasTipCap:             gasTipCap,
+		GasPrice:              uint256.MustFromBig(gasPrice),
+		GasFeeCap:             uint256.MustFromBig(gasFeeCap),
+		GasTipCap:             uint256.MustFromBig(gasTipCap),
 		Data:                  msg.Data,
 		AccessList:            msg.AccessList,
-		BlobGasFeeCap:         toU256(msg.BlobGasFeeCap),
+		BlobGasFeeCap:         uint256.MustFromBig(blobGasFeeCap),
 		BlobHashes:            msg.BlobHashes,
 		SetCodeAuthorizations: msg.AuthorizationList,
 		SkipNonceChecks:       skipNonceCheck,
