@@ -57,7 +57,7 @@ integration-tests: pre-pull-images
 # Container images for fabric-x
 TOOLS_IMAGE          ?= ghcr.io/hyperledger/fabric-x-tools:1.0.0
 ORDERER_IMAGE        ?= ghcr.io/hyperledger/fabric-x-orderer:1.0.0
-TEST_COMMITTER_IMAGE ?= docker.io/hyperledger/fabric-x-committer-test-node:1.0.0
+TEST_COMMITTER_IMAGE ?= docker.io/hyperledger/fabric-x-committer-test-node:1.0.3
 
 # Namespace init defaults
 NS      ?= basic
@@ -92,6 +92,12 @@ init-x:
 		configtxgen --channelID mychannel --profile OrgsChannel \
 		--outputBlock /config/crypto/config-block.pb.bin \
 		--configPath /config
+	@# Make crypto files readable by Prometheus (runs as nobody/uid 65534)
+	@find testdata/crypto -type d -exec chmod a+rx {} +
+	@find testdata/crypto -type f -exec chmod a+r {} +
+	@# Make config files readable by Grafana (runs as uid 472)
+	@find testdata/config -type d -exec chmod a+rx {} +
+	@find testdata/config -type f -exec chmod a+r {} +
 
 .PHONY: clean-x
 clean-x:
@@ -190,6 +196,42 @@ start: start-node blockscout.env
 stop:
 	@$(COMPOSE) down -v
 	@$(COMPOSE) -f compose.fabric-x.yml down
+
+.PHONY: start-full
+start-full:
+	@if nc -z localhost 7050 2>/dev/null; then echo "Error: port 7050 is already in use — stop any running Fabric orderer before starting."; exit 1; fi
+	@mkdir -p \
+		data/orderers/party1-router data/orderers/party1-batcher \
+		data/orderers/party1-consenter data/orderers/party1-assembler \
+		data/orderers/party2-router data/orderers/party2-batcher \
+		data/orderers/party2-consenter data/orderers/party2-assembler \
+		data/orderers/party3-router data/orderers/party3-batcher \
+		data/orderers/party3-consenter data/orderers/party3-assembler \
+		data/orderers/party4-router data/orderers/party4-batcher \
+		data/orderers/party4-consenter data/orderers/party4-assembler \
+		data/committer-org1/db data/committer-org1/sidecar-ledger
+	@$(COMPOSE) -f compose.fabric-x.full.yaml up -d
+	@echo "Waiting for committer to be ready..."
+	@while ! nc -z localhost 7001 2>/dev/null; do sleep 1; done
+	@echo "Waiting for committer sidecar to be ready..."
+	@while ! nc -z localhost 4001 2>/dev/null; do sleep 1; done
+	@$(DOCKER) run --rm --network $(NETWORK) \
+		--user "$(UID):$(GID)" \
+		--env "FX_NS=$(NS)" \
+		--env "FX_POLICY=$(POLICY)" \
+		-v "$(PWD)/testdata/fxconfig.yaml:/config/fxconfig.yaml:ro,Z" \
+		-v "$(PWD)/testdata/crypto/peerOrganizations/org1.example.com/peers/fxconfig.org1.example.com/tls:/tls:ro,Z" \
+		-v "$(PWD)/testdata/crypto/peerOrganizations/org1.example.com/users/channel_admin@org1.example.com/msp:/msp:ro,Z" \
+		-v "$(PWD)/testdata/crypto/peerOrganizations/org1.example.com/msp/tlscacerts/tlsca.org1.example.com-cert.pem:/org-tls-ca.pem:ro,Z" \
+		-v "$(PWD)/testdata/crypto/ordererOrganizations/orderer-org-1/msp/tlscacerts/tlsca.orderer-org-1-cert.pem:/orderer-tls-ca.pem:ro,Z" \
+		$(TOOLS_IMAGE) \
+		sh -c 'fxconfig namespace list --config=/config/fxconfig.yaml 2>/dev/null | grep -q ") $$FX_NS:" || \
+		fxconfig namespace create "$$FX_NS" --policy="$$FX_POLICY" --endorse --submit --wait --config=/config/fxconfig.yaml'
+
+.PHONY: stop-full
+stop-full:
+	@$(COMPOSE) -f compose.fabric-x.full.yaml down
+	@rm -rf data/
 
 blockscout.env:
 	@echo "Generating $@..."

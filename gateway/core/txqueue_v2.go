@@ -10,14 +10,32 @@ import (
 	"container/list"
 	"context"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/hyperledger/fabric-lib-go/common/flogging"
+	"github.com/hyperledger/fabric-x-common/api/committerpb"
 	"github.com/hyperledger/fabric-x-evm/gateway/domain"
 )
 
 var loggerV2 = flogging.MustGetLogger("gateway.core.txqueue_v2")
+
+// ProcessingStartTimestamps is an optional map for tracking when transactions start processing.
+// If non-nil, timestamps are recorded when transactions are dequeued from the queue.
+// Key: Ethereum transaction hash, Value: T2 timestamp (when dequeued for processing)
+var ProcessingStartTimestamps map[common.Hash]time.Time
+
+// ProcessingStartTimestampsMu protects access to ProcessingStartTimestamps
+var ProcessingStartTimestampsMu sync.Mutex
+
+// SetTxQueueReadyListSizeMetric is an optional callback for reporting the ready list size.
+// If non-nil, it will be called to report the current ready list size.
+var SetTxQueueReadyListSizeMetric func(size int)
+
+// SetTxQueueWaitingListSizeMetric is an optional callback for reporting the waiting list size.
+// If non-nil, it will be called to report the current waiting list size.
+var SetTxQueueWaitingListSizeMetric func(size int)
 
 // txEntry represents a transaction in the queue with its dependency information.
 // Each entry maintains two lists of pointers to other transactions:
@@ -29,6 +47,7 @@ var loggerV2 = flogging.MustGetLogger("gateway.core.txqueue_v2")
 // - Entries in the Waiting list have non-empty IsBlockedBy (have dependencies)
 type txEntry struct {
 	tx           *types.Transaction
+	txHash       common.Hash      // Cached transaction hash
 	participants []common.Address // Cached participants (sender/recipient)
 
 	// Linked list element in either readyList or waitingList
@@ -69,6 +88,9 @@ type TxQueueV2 struct {
 	// Statistics
 	total   int
 	invalid int
+
+	totalEnq    int
+	conflictEnq int
 }
 
 // NewTxQueueV2 creates a new dependency-aware transaction queue.
@@ -89,22 +111,29 @@ func NewTxQueueV2() *TxQueueV2 {
 // in-progress or waiting transactions, otherwise it's placed in the Waiting list
 // with appropriate dependency links.
 func (q *TxQueueV2) Enqueue(tx *types.Transaction) {
+	// Compute hash and participants outside the lock
+	txHash := tx.Hash()
+	participants := participantsForTx(tx)
+
+	// Pre-allocate slices outside the lock
+	blocks := make([]*txEntry, 0)
+	isBlockedBy := make([]*txEntry, 0)
+
+	// Create new entry with pre-computed values
+	entry := &txEntry{
+		tx:           tx,
+		txHash:       txHash,
+		participants: participants,
+		blocks:       blocks,
+		isBlockedBy:  isBlockedBy,
+	}
+
 	q.mu.Lock()
 	defer q.mu.Unlock()
-
-	txHash := tx.Hash()
 
 	// Check if already tracked
 	if _, exists := q.hashMap[txHash]; exists {
 		return
-	}
-
-	// Create new entry
-	entry := &txEntry{
-		tx:           tx,
-		participants: participantsForTx(tx),
-		blocks:       make([]*txEntry, 0),
-		isBlockedBy:  make([]*txEntry, 0),
 	}
 
 	// Find all transactions that share at least one participant
@@ -117,8 +146,11 @@ func (q *TxQueueV2) Enqueue(tx *types.Transaction) {
 		}
 	}
 
+	q.totalEnq++
+
 	// If there are conflicts, add dependency links and place in waiting list
 	if len(conflictingTxs) > 0 {
+		q.conflictEnq++
 		for conflictTx := range conflictingTxs {
 			// Add bidirectional dependency links
 			entry.isBlockedBy = append(entry.isBlockedBy, conflictTx)
@@ -127,14 +159,14 @@ func (q *TxQueueV2) Enqueue(tx *types.Transaction) {
 
 		// Add to waiting list
 		entry.listElement = q.waitingList.PushBack(entry)
-		loggerV2.Debugf("Enqueue: tx %s blocked by %d txs, waiting=%d ready=%d",
-			txHash.Hex()[:10], len(conflictingTxs), q.waitingList.Len(), q.readyList.Len())
+		loggerV2.Debugf("[QUEUE] Enqueue: tx %s WAITING (blocked by %d), ready=%d waiting=%d pending=%d",
+			txHash.Hex()[:10], len(conflictingTxs), q.readyList.Len(), q.waitingList.Len(), len(q.pendingMap))
 	} else {
 		// No conflicts - add to ready list
 		entry.listElement = q.readyList.PushBack(entry)
 		q.cond.Signal() // Wake up one waiting worker
-		loggerV2.Debugf("Enqueue: tx %s ready, waiting=%d ready=%d",
-			txHash.Hex()[:10], q.waitingList.Len(), q.readyList.Len())
+		loggerV2.Debugf("[QUEUE] Enqueue: tx %s READY, ready=%d waiting=%d pending=%d",
+			txHash.Hex()[:10], q.readyList.Len(), q.waitingList.Len(), len(q.pendingMap))
 	}
 
 	// Update lookup maps
@@ -152,6 +184,14 @@ func (q *TxQueueV2) Dequeue() (*types.Transaction, bool) {
 	defer q.mu.Unlock()
 
 	for {
+		// Report queue size metrics if callbacks are set (inside mutex to get accurate counts)
+		if SetTxQueueReadyListSizeMetric != nil {
+			SetTxQueueReadyListSizeMetric(q.readyList.Len())
+		}
+		if SetTxQueueWaitingListSizeMetric != nil {
+			SetTxQueueWaitingListSizeMetric(q.waitingList.Len())
+		}
+
 		// Wait while ready list is empty and queue is not closed
 		for q.readyList.Len() == 0 && !q.done {
 			q.cond.Wait()
@@ -166,7 +206,6 @@ func (q *TxQueueV2) Dequeue() (*types.Transaction, bool) {
 		if elem := q.readyList.Front(); elem != nil {
 			entry := elem.Value.(*txEntry)
 			tx := entry.tx
-			txHash := tx.Hash()
 
 			// Remove from ready list
 			q.readyList.Remove(elem)
@@ -175,11 +214,18 @@ func (q *TxQueueV2) Dequeue() (*types.Transaction, bool) {
 			// Keep in participant map so new transactions can find and block on it
 			// Will be removed when Complete is called
 
-			// Move to pending map
-			q.pendingMap[txHash] = tx
+			// Move to pending map - use cached hash from entry
+			q.pendingMap[entry.txHash] = tx
+
+			// Record T2 timestamp if tracking is enabled
+			if ProcessingStartTimestamps != nil {
+				ProcessingStartTimestampsMu.Lock()
+				ProcessingStartTimestamps[entry.txHash] = time.Now() // T2: dequeued for processing
+				ProcessingStartTimestampsMu.Unlock()
+			}
 
 			loggerV2.Debugf("Dequeue: tx %s, waiting=%d ready=%d pending=%d",
-				txHash.Hex()[:10], q.waitingList.Len(), q.readyList.Len(), len(q.pendingMap))
+				entry.txHash.Hex()[:10], q.waitingList.Len(), q.readyList.Len(), len(q.pendingMap))
 
 			return tx, true
 		}
@@ -277,16 +323,23 @@ func (q *TxQueueV2) Close() {
 // Handle processes block notifications from the synchronizer and marks transactions as complete.
 // This method is designed to be registered as a callback with the block synchronizer.
 func (q *TxQueueV2) Handle(ctx context.Context, block *domain.Block) error {
+	// Pre-compute all transaction hashes outside the lock
+	txHashes := make([]common.Hash, len(block.Transactions))
+	statuses := make([]uint8, len(block.Transactions))
+	for i, tx := range block.Transactions {
+		txHashes[i] = common.BytesToHash(tx.TxHash)
+		statuses[i] = tx.Status
+	}
+
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
 	totalPromoted := 0
 
 	// Mark all transactions in the block as complete
-	for _, tx := range block.Transactions {
-		txHash := common.BytesToHash(tx.TxHash)
+	for i, txHash := range txHashes {
 		q.total++
-		if tx.Status == 0 {
+		if statuses[i] == 0 {
 			q.invalid++
 		}
 
@@ -307,10 +360,51 @@ func (q *TxQueueV2) Handle(ctx context.Context, block *domain.Block) error {
 
 // Stats returns statistics about processed transactions.
 // Returns (total transactions processed, invalid transactions).
-func (q *TxQueueV2) Stats() (int, int) {
+// HandleTx processes transaction notifications and marks transactions as complete.
+// This method implements the TxHandler interface for use with the notification system.
+func (q *TxQueueV2) HandleTx(ctx context.Context, notifs []TxNotification) error {
+	// Pre-extract transaction hashes and statuses outside the lock
+	numNotifs := len(notifs)
+	txHashes := make([]common.Hash, numNotifs)
+	statuses := make([]committerpb.Status, numNotifs)
+	for i, notif := range notifs {
+		txHashes[i] = notif.EthTxHash
+		statuses[i] = notif.Status
+	}
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	totalPromoted := 0
+
+	// Mark all transactions in the batch as complete
+	for i := 0; i < numNotifs; i++ {
+		q.total++
+		if statuses[i] != committerpb.Status_COMMITTED {
+			q.invalid++
+		}
+		totalPromoted += q.completeUnlocked(txHashes[i])
+	}
+
+	loggerV2.Debugf("[QUEUE] HandleTx: notifs=%d promoted=%d ready=%d waiting=%d pending=%d",
+		numNotifs, totalPromoted, q.readyList.Len(), q.waitingList.Len(), len(q.pendingMap))
+
+	// Signal workers based on how many transactions were promoted
+	if totalPromoted == 1 {
+		// Only one transaction promoted - wake up one worker
+		q.cond.Signal()
+	} else if totalPromoted > 1 {
+		// Multiple transactions promoted - wake up all workers
+		q.cond.Broadcast()
+	}
+
+	return nil
+}
+
+func (q *TxQueueV2) Stats() (int, int, int, int) {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
-	return q.total, q.invalid
+	return q.total, q.invalid, q.totalEnq, q.conflictEnq
 }
 
 // Helper functions

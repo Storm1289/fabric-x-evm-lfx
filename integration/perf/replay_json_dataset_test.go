@@ -11,12 +11,12 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"os"
 	"runtime"
 	"runtime/pprof"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -24,6 +24,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/hyperledger/fabric-x-common/api/committerpb"
 	"github.com/hyperledger/fabric-x-evm/endorser"
 	econf "github.com/hyperledger/fabric-x-evm/endorser/config"
 	"github.com/hyperledger/fabric-x-evm/endorser/testimpl"
@@ -34,6 +35,52 @@ import (
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc/grpclog"
 )
+
+var gatewayConfig = flag.String("gateway-config", "fabx.yaml", "gateway config file for the Fabric-X network")
+var metricsAddr = flag.String("metrics-addr", "0.0.0.0:2112", "address for Prometheus metrics endpoint")
+var enableMetrics = flag.Bool("enable-metrics", false, "enable Prometheus metrics export")
+
+// TxCompletionTracker forwards all transaction completion notifications to a single channel.
+// It implements gwcore.TxHandler to receive notifications from the notification system.
+type TxCompletionTracker struct {
+	mu           sync.Mutex
+	completionCh chan gwcore.TxNotification
+	stopped      bool
+}
+
+// NewTxCompletionTracker creates a new tracker with a completion channel.
+func NewTxCompletionTracker(completionCh chan gwcore.TxNotification) *TxCompletionTracker {
+	return &TxCompletionTracker{
+		completionCh: completionCh,
+	}
+}
+
+// Stop prevents any further sends to the completion channel. Must be called before
+// closing the channel to avoid panics from in-flight notification goroutines.
+func (t *TxCompletionTracker) Stop() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.stopped = true
+}
+
+// HandleTx implements gwcore.TxHandler. It receives notifications about completed transactions
+// and forwards them to the completion channel.
+func (t *TxCompletionTracker) HandleTx(ctx context.Context, notifs []gwcore.TxNotification) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.stopped {
+		return nil
+	}
+	for _, notif := range notifs {
+		select {
+		case t.completionCh <- notif:
+		default:
+			// Channel full - this shouldn't happen with proper sizing
+			return fmt.Errorf("completion channel full, dropping notification for tx %s", notif.EthTxHash.Hex())
+		}
+	}
+	return nil
+}
 
 // balancePrimingEndorserFactory creates endorsers with balance priming support for testing.
 func balancePrimingEndorserFactory(balancePriming *testimpl.BalancePrimingConfig) integration.EndorserFactory {
@@ -143,9 +190,26 @@ func writeHeapProfile(filename string) {
 
 // runReplayTest executes the replay test with configurable worker counts and returns metrics.
 // Returns: (overallThroughput, failedTransactionCount, totalTransactionCount)
-func runReplayTest(t *testing.T, processingWorkerCount int, submittingWorkerCount int, cfg replayConfig) (float64, int64, int64) {
+func runReplayTest(t *testing.T, processingWorkerCount int, submittingWorkerCount int, ordererSubmitterCount int, numOutstandingTx int, cfg replayConfig, gwConfig string) (float64, int64, int64) {
 	// Silence GRPC logging
 	grpclog.SetLoggerV2(grpclog.NewLoggerV2(io.Discard, os.Stderr, os.Stderr))
+
+	// Initialize Prometheus metrics if enabled
+	var metrics *LoadgenMetrics
+	if *enableMetrics {
+		metrics = NewLoadgenMetrics()
+		if err := metrics.StartServer(*metricsAddr); err != nil {
+			t.Logf("Failed to start metrics server: %v", err)
+		} else {
+			t.Logf("Prometheus metrics available at http://localhost%s/metrics", *metricsAddr)
+			defer metrics.StopServer()
+		}
+
+		// Wire up queue size metrics callbacks
+		gwcore.SetBatchSubmitterQueueSizeMetric = metrics.SetBatchSubmitterInputQueueSize
+		gwcore.SetTxQueueReadyListSizeMetric = metrics.SetTxQueueReadyListSize
+		gwcore.SetTxQueueWaitingListSizeMetric = metrics.SetTxQueueWaitingListSize
+	}
 
 	// USDC contract address
 	USDCAddr := common.HexToAddress("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48")
@@ -160,9 +224,20 @@ func runReplayTest(t *testing.T, processingWorkerCount int, submittingWorkerCoun
 
 	// Setup test harness with USDC contract and balance priming enabled
 	factory := balancePrimingEndorserFactory(balancePriming)
-	th, err := integration.NewLocalTestHarnessWithFactoryAndTxQueue(t, integration.TestLogger{T: t}, evmConfig, "testdata/USDC_contract.json", "fabric", map[string]any{"Gateway.WorkerCount": processingWorkerCount}, factory, gwcore.NewTxQueueV2())
-	// th, err = integration.NewFabricXTestHarnessWithFactoryAndTxQueue(t, integration.TestLogger{T: t}, evmConfig, "testdata/USDC_contract.json", map[string]any{"Gateway.WorkerCount": processingWorkerCount}, factory, gwcore.NewTxQueueV2())
-	// th, err = integration.NewFabricTestHarnessWithFactoryAndTxQueue(t, integration.TestLogger{T: t}, evmConfig, "testdata/USDC_contract.json", map[string]any{"Gateway.WorkerCount": processingWorkerCount}, factory, gwcore.NewTxQueueV2())
+
+	// Create completion channel for transaction notifications
+	completionCh := make(chan gwcore.TxNotification, numOutstandingTx*2)
+
+	// Create completion tracker for async transaction monitoring
+	tracker := NewTxCompletionTracker(completionCh)
+
+	// Choose test harness based on backend:
+	// - Local: Traditional block-based synchronization
+	// - Fabric: Traditional block-based synchronization
+	// - Fabric-X: Notification-based (MemoryStore + NotificationDispatcher)
+	// th, err := integration.NewLocalTestHarnessWithFactoryAndTxQueue(t, integration.TestLogger{T: t}, evmConfig, "testdata/USDC_contract.json", "fabric", map[string]any{"Gateway.WorkerCount": processingWorkerCount, "Gateway.SubmitterCount": ordererSubmitterCount}, factory, gwcore.NewTxQueueV2())
+	th, err := integration.NewFabricXTestHarnessWithNotifications(t, integration.TestLogger{T: t}, evmConfig, "testdata/USDC_contract.json", map[string]any{"Gateway.WorkerCount": processingWorkerCount, "Gateway.SubmitterCount": ordererSubmitterCount}, factory, gwcore.NewTxQueueV2(), tracker, gwConfig)
+	// th, err = integration.NewFabricTestHarnessWithFactoryAndTxQueue(t, integration.TestLogger{T: t}, evmConfig, "testdata/USDC_contract.json", map[string]any{"Gateway.WorkerCount": processingWorkerCount, "Gateway.SubmitterCount": ordererSubmitterCount}, factory, gwcore.NewTxQueueV2())
 	assert.NoError(t, err)
 
 	// Wrap the gateway with NonceBypassGateway to skip nonce validation
@@ -198,9 +273,30 @@ func runReplayTest(t *testing.T, processingWorkerCount int, submittingWorkerCoun
 		cfg.totalDispatches = int64(len(window)) * cfg.wrapCount
 	}
 
+	// Validate numOutstandingTx
+	if numOutstandingTx > len(window) {
+		panic(fmt.Sprintf("numOutstandingTx (%d) cannot be larger than window size (%d)", numOutstandingTx, len(window)))
+	}
+
 	// Replay transactions with parallel workers
 	// Atomic counters for thread-safe counting
 	var successCount, failCount, skippedCount int64
+
+	// Latency tracking: map transaction hash to submission time (T1)
+	latencyMu := sync.Mutex{}
+	submissionTimes := make(map[common.Hash]time.Time)
+
+	// Enable T2 timestamp tracking in txqueue (when dequeued for processing)
+	gwcore.ProcessingStartTimestamps = make(map[common.Hash]time.Time)
+	defer func() {
+		gwcore.ProcessingStartTimestamps = nil // Clean up after test
+	}()
+
+	// Enable T3 timestamp tracking in batch_submitter (when submitted to orderer)
+	gwcore.SubmissionTimestamps = make(map[common.Hash]time.Time)
+	defer func() {
+		gwcore.SubmissionTimestamps = nil // Clean up after test
+	}()
 
 	runtime.GC()
 
@@ -215,78 +311,61 @@ func runReplayTest(t *testing.T, processingWorkerCount int, submittingWorkerCoun
 		index    int64
 		transfer TokenTransfer
 	}
-	workChan := make(chan workItem, 500) // Buffer to avoid blocking
+	// Buffer size = numOutstandingTx + numWorkers to avoid blocking
+	workChan := make(chan workItem, numOutstandingTx+submittingWorkerCount)
+
+	// Metrics for outstanding transactions
+	var outstandingTxCount int64
 
 	// Worker pool configuration
 	numWorkers := submittingWorkerCount
 	var wg sync.WaitGroup
 
-	// Start worker goroutines
-	for w := 0; w < numWorkers; w++ {
+	// Start worker goroutines - they continuously submit without waiting for completion
+	for range numWorkers {
 		wg.Add(1)
-		go func(workerID int) {
+		go func() {
 			defer wg.Done()
-
-			// Create native eth client for read operations (TransactionByHash, etc.)
-			ec, err := integration.NewNativeEthClient(th.Gateways[0])
-			assert.NoError(t, err)
 
 			for item := range workChan {
 				i := item.index
 				transfer := item.transfer
-
-				// Skip transfers without transactions
-				if len(transfer.Transaction) == 0 {
-					atomic.AddInt64(&skippedCount, 1)
-					continue
-				}
 
 				// Unmarshal the transaction from bytes
 				tx := new(types.Transaction)
 				err := tx.UnmarshalBinary(transfer.Transaction)
 				if err != nil {
 					t.Logf("Transfer %d: Failed to unmarshal transaction: %v", i, err)
-					atomic.AddInt64(&failCount, 1)
-					continue
+					panic(err)
 				}
 
-				// Send the transaction and wait for it to be committed
-				func() {
-					defer func() {
-						if r := recover(); r != nil {
-							// t.Logf("Transfer %d: Failed to send transaction (panic recovered): %v", i, r)
-							atomic.AddInt64(&failCount, 1)
-						} else {
-							atomic.AddInt64(&successCount, 1)
-						}
-					}()
+				// Record submission time
+				txHash := tx.Hash()
+				submissionTime := time.Now()
+				latencyMu.Lock()
+				submissionTimes[txHash] = submissionTime
+				latencyMu.Unlock()
 
-					// Use the wrapped gateway directly to bypass nonce validation
-					err = wrappedGateway.SendTransaction(context.Background(), tx)
-					if err != nil {
-						t.Logf("Transfer %d: SendTransaction error: %v", i, err)
-						panic(err) // Trigger the defer recovery
-					}
-
-					// Wait for transaction to be committed
-					for pending := true; pending; {
-						_, pending, err = ec.TransactionByHash(t.Context(), tx.Hash())
-						if err != nil {
-							if !strings.Contains(err.Error(), "not found") {
-								t.Logf("Transfer %d: TransactionByHash error: %v", i, err)
-								panic(err)
-							} else {
-								pending = true
-							}
-						}
-
-						if pending {
-							time.Sleep(time.Millisecond)
-						}
-					}
-				}()
+				// Send the transaction without waiting for completion
+				// Use the wrapped gateway directly to bypass nonce validation
+				err = wrappedGateway.SendTransaction(context.Background(), tx)
+				if err != nil {
+					t.Logf("Transfer %d: SendTransaction error: %v", i, err)
+					atomic.AddInt64(&failCount, 1)
+					atomic.AddInt64(&outstandingTxCount, -1)
+					// Remove from tracking on failure
+					latencyMu.Lock()
+					delete(submissionTimes, txHash)
+					latencyMu.Unlock()
+					continue
+				}
+				// Transaction submitted successfully - it's now outstanding
+				// The completion will be tracked by the refill goroutine
+				if metrics != nil {
+					metrics.RecordTransactionSent()
+				}
 			}
-		}(w)
+		}()
 	}
 
 	// Progress logging goroutine
@@ -311,6 +390,7 @@ func runReplayTest(t *testing.T, processingWorkerCount int, submittingWorkerCoun
 				currentFail := atomic.LoadInt64(&failCount)
 				currentSkipped := atomic.LoadInt64(&skippedCount)
 				currentTotal := currentSuccess + currentFail
+				currentOutstanding := atomic.LoadInt64(&outstandingTxCount)
 
 				txProcessed := currentTotal - lastLogCount
 				throughput := float64(txProcessed) / elapsed
@@ -323,10 +403,16 @@ func runReplayTest(t *testing.T, processingWorkerCount int, submittingWorkerCoun
 					progressTarget = cfg.totalDispatches
 				}
 
-				t.Logf("Progress: %d/%d transfers processed (%d successful, %d failed, %d skipped) | Throughput: %.2f tx/s (recent), %.2f tx/s (overall)",
+				t.Logf("Progress: %d/%d transfers processed (%d successful, %d failed, %d skipped, %d outstanding) | Throughput: %.2f tx/s (recent), %.2f tx/s (overall)",
 					currentSuccess+currentFail+currentSkipped, progressTarget,
-					currentSuccess, currentFail, currentSkipped,
+					currentSuccess, currentFail, currentSkipped, currentOutstanding,
 					throughput, overallThroughput)
+
+				// Update metrics
+				if metrics != nil {
+					metrics.SetOutstandingTransactions(currentOutstanding)
+					metrics.SetThroughput(overallThroughput)
+				}
 
 				// Update for next interval
 				lastLogTime.Store(now)
@@ -344,40 +430,132 @@ func runReplayTest(t *testing.T, processingWorkerCount int, submittingWorkerCoun
 		}
 	}()
 
-	// Feed work to the workers
+	// Feed work to the workers (refill goroutine)
+	var refillWg sync.WaitGroup
+	refillWg.Add(1)
 	var dispatched int64
 	cursor := 0
 
-	for {
-		if cfg.wrapAround {
-			if dispatched >= cfg.totalDispatches {
-				break
-			}
-		} else {
-			if cursor >= len(window) {
-				break
-			}
+	go func() {
+		defer refillWg.Done()
+		defer close(workChan)
+
+		// Pre-fill the channel with numOutstandingTx transactions
+		t.Logf("Pre-filling work channel with %d transactions", numOutstandingTx)
+		for range numOutstandingTx {
+			workChan <- workItem{index: dispatched, transfer: window[cursor]}
+			atomic.AddInt64(&outstandingTxCount, 1)
+			dispatched++
+			cursor++
 		}
+		t.Logf("Pre-fill complete, %d transactions dispatched", dispatched)
 
-		workChan <- workItem{index: dispatched, transfer: window[cursor]}
-		dispatched++
-		cursor++
+		// Process completions and refill
+		for notif := range completionCh {
+			atomic.AddInt64(&outstandingTxCount, -1)
 
-		if cursor >= len(window) {
-			if cfg.wrapAround {
-				cursor = 0
-				// BalancePrimingWrapper.GetNonce() handles nonce validation bypass automatically,
-				// so no explicit nonce priming is needed between wrap-around passes.
-				t.Logf("Wrap-around: restarting from beginning (dispatched %d so far)", dispatched)
+			// T4: notification received time
+			t4 := time.Now()
+
+			// Get T1 (test submission time)
+			latencyMu.Lock()
+			t1, existsT1 := submissionTimes[notif.EthTxHash]
+			if existsT1 {
+				delete(submissionTimes, notif.EthTxHash)
+			}
+			latencyMu.Unlock()
+
+			// Get T2 (dequeue/processing start time)
+			gwcore.ProcessingStartTimestampsMu.Lock()
+			t2, existsT2 := gwcore.ProcessingStartTimestamps[notif.EthTxHash]
+			if existsT2 {
+				delete(gwcore.ProcessingStartTimestamps, notif.EthTxHash)
+			}
+			gwcore.ProcessingStartTimestampsMu.Unlock()
+
+			// Get T3 (batch submitter time)
+			gwcore.SubmissionTimestampsMu.Lock()
+			t3, existsT3 := gwcore.SubmissionTimestamps[notif.EthTxHash]
+			if existsT3 {
+				delete(gwcore.SubmissionTimestamps, notif.EthTxHash)
+			}
+			gwcore.SubmissionTimestampsMu.Unlock()
+
+			// Calculate and record latencies if we have all timestamps
+			if metrics != nil && existsT1 && existsT2 && existsT3 {
+				totalLatency := t4.Sub(t1)      // T4 - T1: total end-to-end latency
+				queueLatency := t2.Sub(t1)      // T2 - T1: queueing time
+				processingLatency := t3.Sub(t2) // T3 - T2: processing time by the app
+				backendLatency := t4.Sub(t3)    // T4 - T3: processing time by the backend
+				metrics.RecordLatencies(totalLatency, queueLatency, processingLatency, backendLatency)
+			}
+
+			// Update success/fail counts
+			if notif.Status == committerpb.Status_COMMITTED {
+				atomic.AddInt64(&successCount, 1)
+				if metrics != nil {
+					metrics.RecordTransactionCommitted()
+				}
 			} else {
-				break
+				atomic.AddInt64(&failCount, 1)
+				t.Logf("Transaction %s failed with status: %v", notif.EthTxHash.Hex(), notif.Status)
+				if metrics != nil {
+					metrics.RecordTransactionAborted()
+				}
+			}
+
+			// Check if we should dispatch more work
+			if cfg.wrapAround {
+				if dispatched >= cfg.totalDispatches {
+					// Check if all outstanding transactions are done
+					if atomic.LoadInt64(&outstandingTxCount) == 0 {
+						t.Logf("All transactions completed, closing work channel")
+						return
+					}
+					continue
+				}
+			} else {
+				if cursor >= len(window) {
+					// Check if all outstanding transactions are done
+					if atomic.LoadInt64(&outstandingTxCount) == 0 {
+						t.Logf("All transactions completed, closing work channel")
+						return
+					}
+					continue
+				}
+			}
+
+			// Add next transaction to the channel
+			workChan <- workItem{index: dispatched, transfer: window[cursor]}
+			atomic.AddInt64(&outstandingTxCount, 1)
+			dispatched++
+			cursor++
+
+			// Handle wrap-around
+			if cursor >= len(window) {
+				if cfg.wrapAround {
+					cursor = 0
+					// BalancePrimingWrapper.GetNonce() handles nonce validation bypass automatically,
+					// so no explicit nonce priming is needed between wrap-around passes.
+					t.Logf("Wrap-around: restarting from beginning (dispatched %d so far)", dispatched)
+				}
 			}
 		}
-	}
+	}()
 
-	// Close the work channel and wait for all workers to finish
-	close(workChan)
+	// Wait for all workers to finish processing
 	wg.Wait()
+
+	// Stop the tracker before closing the channel — the notification streaming
+	// goroutine (started by the test harness) outlives this function and would
+	// otherwise panic by sending on a closed channel.
+	tracker.Stop()
+
+	// Close completion channel to signal refill goroutine
+	close(completionCh)
+
+	// Wait for refill goroutine to finish
+	refillWg.Wait()
 
 	// Stop the logging goroutine
 	close(stopLogging)
@@ -409,7 +587,12 @@ func TestReplayJSONDataset(t *testing.T) {
 	// flogging.ActivateSpec("gateway.core.txqueue_v2=debug")
 
 	// Run the test with single worker configuration
-	_, _, _ = runReplayTest(t, 1, 1, loadReplayConfigFromEnv(t))
+	processingWorkerCount := 20 // Number of gateway workers processing transactions
+	submittingWorkerCount := 4  // Number of goroutines submitting transactions TO the gateway
+	ordererSubmitterCount := 8  // Number of goroutines submitting transactions TO the orderer (BatchSubmitter workers)
+	numOutstandingTx := 2000    // Maximum number of outstanding transactions
+
+	_, _, _ = runReplayTest(t, processingWorkerCount, submittingWorkerCount, ordererSubmitterCount, numOutstandingTx, replayConfig{windowSize: 1000000}, *gatewayConfig)
 }
 
 type performanceResult struct {
@@ -432,6 +615,7 @@ func TestReplayJSONDatasetPerformance(t *testing.T) {
 	// Define the range of worker counts to test
 	processingWorkerCounts := []int{1, 4, 8}
 	submittingWorkerCounts := []int{4, 8, 16, 24}
+	ordererSubmitterCounts := []int{16} // Default orderer submitter count
 
 	// Store results
 	var results []performanceResult
@@ -441,23 +625,25 @@ func TestReplayJSONDatasetPerformance(t *testing.T) {
 	// Run tests with different worker configurations
 	for _, processingWorkers := range processingWorkerCounts {
 		for _, submittingWorkers := range submittingWorkerCounts {
-			t.Logf("\n=== Testing with processingWorkers=%d, submittingWorkers=%d ===",
-				processingWorkers, submittingWorkers)
+			for _, ordererSubmitters := range ordererSubmitterCounts {
+				t.Logf("\n=== Testing with processingWorkers=%d, submittingWorkers=%d, ordererSubmitters=%d ===",
+					processingWorkers, submittingWorkers, ordererSubmitters)
 
-			throughput, failedTxs, totalTxs := runReplayTest(t, processingWorkers, submittingWorkers, loadReplayConfigFromEnv(t))
-			failureRate := float64(failedTxs) / float64(totalTxs)
+				throughput, failedTxs, totalTxs := runReplayTest(t, processingWorkers, submittingWorkers, ordererSubmitters, 100, loadReplayConfigFromEnv(t), *gatewayConfig)
+				failureRate := float64(failedTxs) / float64(totalTxs)
 
-			results = append(results, performanceResult{
-				processingWorkers:  processingWorkers,
-				submittingWorkers:  submittingWorkers,
-				throughput:         throughput,
-				failedTransactions: failedTxs,
-				totalTransactions:  totalTxs,
-				failureRate:        failureRate,
-			})
+				results = append(results, performanceResult{
+					processingWorkers:  processingWorkers,
+					submittingWorkers:  submittingWorkers,
+					throughput:         throughput,
+					failedTransactions: failedTxs,
+					totalTransactions:  totalTxs,
+					failureRate:        failureRate,
+				})
 
-			t.Logf("Result: Throughput=%.2f tx/s, Failed=%d/%d (%.2f%%)",
-				throughput, failedTxs, totalTxs, failureRate*100)
+				t.Logf("Result: Throughput=%.2f tx/s, Failed=%d/%d (%.2f%%)",
+					throughput, failedTxs, totalTxs, failureRate*100)
+			}
 		}
 	}
 
