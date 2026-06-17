@@ -235,7 +235,7 @@ func generateDatasetMode(inputFile, outputFile string) error {
 
 		// Create the transaction using the nonce tracker
 		// The nonce tracker will automatically increment the nonce for each sender
-		tx, err := ethSender.TxForCall(ctx, nonceTracker, &usdcAddress, "transfer", nil, mappedRecipient, transferValue)
+		tx, err := ethSender.TxForCall(ctx, nonceTracker, &usdcAddress, "transfer", mappedRecipient, transferValue)
 		if err != nil {
 			log.Printf("Transfer %d: Failed to create transaction: %v", i, err)
 			failCount++

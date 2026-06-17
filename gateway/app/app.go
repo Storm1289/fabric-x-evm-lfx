@@ -119,7 +119,12 @@ func buildApp(ctx context.Context, cfg config.Config, gwSigner sdk.Signer, logge
 		return nil, fmt.Errorf("failed to create chain: %w", err)
 	}
 
-	gateway, err := core.New(ec, submitter, chain, cfg.Network.ChainID, cfg.Gateway.WorkerCount, nil)
+	// Create BatchSubmitter infrastructure (no cache needed — app uses chain-based synchronizer)
+	endorsementChan := make(chan sdk.Endorsement, 1000)
+	batchSubmitter := core.NewBatchSubmitter(submitter, nil, endorsementChan, cfg.Gateway.SubmitterCount)
+	batchSubmitter.Start(ctx)
+
+	gateway, err := core.New(ec, submitter, chain, cfg.Network.ChainID, cfg.Gateway.WorkerCount, nil, endorsementChan)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create gateway: %w", err)
 	}

@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"log"
 	"math"
 	"math/big"
 	"sync"
@@ -55,7 +56,7 @@ type TxQueueInterface interface {
 	Handle(ctx context.Context, block *domain.Block) error
 
 	// Stats returns statistics about processed transactions (total, invalid)
-	Stats() (total int, invalid int)
+	Stats() (total int, invalid int, totalEnq int, conflictEnq int)
 }
 
 var logger = flogging.MustGetLogger("gateway.core")
@@ -65,16 +66,17 @@ var logger = flogging.MustGetLogger("gateway.core")
 // contract, the gateway requests endorsement from a set of EVM endorsers. It then
 // submits a signed transaction with the read/writeset to the Fabric orderers.
 type Gateway struct {
-	submitter   Submitter
-	endorsers   *EndorsementClient
-	store       Store
-	chainID     *big.Int
-	ChainConfig *params.ChainConfig
-	Signer      types.Signer
-	TxQueue     TxQueueInterface
-	workerCount int
-	wg          sync.WaitGroup
-	stopOnce    sync.Once
+	submitter       Submitter
+	endorsers       *EndorsementClient
+	store           Store
+	chainID         *big.Int
+	ChainConfig     *params.ChainConfig
+	Signer          types.Signer
+	TxQueue         TxQueueInterface
+	workerCount     int
+	wg              sync.WaitGroup
+	stopOnce        sync.Once
+	endorsementChan chan sdk.Endorsement // Channel to send endorsements to BatchSubmitter
 }
 
 type Store interface {
@@ -94,7 +96,9 @@ type Store interface {
 
 // New creates a new Ethereum Gateway.
 // If txQueue is nil, NewTxQueue() will be used as the default.
-func New(ec *EndorsementClient, submitter Submitter, store Store, chainID int64, workerCount int, txQueue TxQueueInterface) (*Gateway, error) {
+// batchSubmitter is required and handles all endorsement submissions.
+// endorsementChan is the channel to send endorsements to the BatchSubmitter.
+func New(ec *EndorsementClient, submitter Submitter, store Store, chainID int64, workerCount int, txQueue TxQueueInterface, endorsementChan chan sdk.Endorsement) (*Gateway, error) {
 	if workerCount <= 0 {
 		workerCount = 1
 	}
@@ -106,14 +110,15 @@ func New(ec *EndorsementClient, submitter Submitter, store Store, chainID int64,
 
 	cid := big.NewInt(chainID)
 	return &Gateway{
-		endorsers:   ec,
-		submitter:   submitter,
-		store:       store,
-		chainID:     cid,
-		ChainConfig: cmn.BuildChainConfig(chainID),
-		Signer:      types.LatestSignerForChainID(cid),
-		TxQueue:     txQueue,
-		workerCount: workerCount,
+		endorsers:       ec,
+		submitter:       submitter,
+		store:           store,
+		chainID:         cid,
+		ChainConfig:     cmn.BuildChainConfig(chainID),
+		Signer:          types.LatestSignerForChainID(cid),
+		TxQueue:         txQueue,
+		workerCount:     workerCount,
+		endorsementChan: endorsementChan,
 	}, nil
 }
 
@@ -179,12 +184,15 @@ func (g *Gateway) ExecuteEthTx(ctx context.Context, tx *types.Transaction) (sdk.
 	return g.endorsers.ExecuteTransaction(ctx, tx)
 }
 
-// SubmitFabricTx submits a Fabric envelope.
+// SubmitFabricTx submits a Fabric envelope via the BatchSubmitter.
 func (g *Gateway) SubmitFabricTx(ctx context.Context, end sdk.Endorsement) error {
-	if err := g.submitter.Submit(ctx, end); err != nil {
-		return fmt.Errorf("submit: %w", err)
+	// Send endorsement to BatchSubmitter via channel
+	select {
+	case g.endorsementChan <- end:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("context canceled while sending endorsement: %w", ctx.Err())
 	}
-	return nil
 }
 
 // ChainID returns the configured chainID for this deployment.
@@ -374,9 +382,10 @@ func (g *Gateway) Stop() error {
 		err = g.submitter.Close()
 	})
 
-	total, invalid := g.TxQueue.Stats()
+	total, invalid, totalEnq, conflictEnq := g.TxQueue.Stats()
 	if total > 0 {
-		fmt.Println("gw stats:", total, invalid, float64(invalid)/float64(total))
+		log.Println("gw stats: valid/invalid/invalid rate        ", total, invalid, float64(invalid)/float64(total))
+		log.Println("gw stats: total/conflicting/conflicting rate", totalEnq, conflictEnq, float64(conflictEnq)/float64(totalEnq))
 	}
 
 	return err

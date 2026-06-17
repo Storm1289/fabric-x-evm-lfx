@@ -11,7 +11,7 @@ networks:
 
 services:
   test-committer:
-    image: docker.io/hyperledger/fabric-x-committer-test-node:1.0.0
+    image: docker.io/hyperledger/fabric-x-committer-test-node:1.0.3
     pull_policy: missing
     restart: unless-stopped
     container_name: test-committer
@@ -60,6 +60,7 @@ services:
       SC_QUERY_DATABASE_PASSWORD: "postgres"
       SC_QUERY_DATABASE_DATABASE: "postgres"
       SC_ORDERER_BLOCK_SIZE: "1"
+      # SC_ORDERER_BLOCK_TIMEOUT: "100ms"
     healthcheck:
       test: ["CMD-SHELL", "nc -z localhost 7001"]
       interval: 2s
