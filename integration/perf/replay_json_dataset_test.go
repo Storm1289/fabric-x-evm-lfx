@@ -240,6 +240,10 @@ func runReplayTest(t *testing.T, processingWorkerCount int, submittingWorkerCoun
 	// th, err = integration.NewFabricTestHarnessWithFactoryAndTxQueue(t, integration.TestLogger{T: t}, evmConfig, "testdata/USDC_contract.json", map[string]any{"Gateway.WorkerCount": processingWorkerCount, "Gateway.SubmitterCount": ordererSubmitterCount}, factory, gwcore.NewTxQueueV2())
 	assert.NoError(t, err)
 
+	// wait for the priming tx to be committed: we can no longer
+	// rely on commit checks because we have disabled the block store
+	time.Sleep(time.Second)
+
 	// Wrap the gateway with NonceBypassGateway to skip nonce validation
 	// This is necessary for wrap-around replay where the same transactions are replayed
 	wrappedGateway := gwtestimpl.NewNonceBypassGateway(th.Gateways[0])
@@ -419,10 +423,12 @@ func runReplayTest(t *testing.T, processingWorkerCount int, submittingWorkerCoun
 				lastLogCount = currentTotal
 
 				_ = itrctr
-				// runtime.GC()
-				// logMem("blah")
+				// if itrctr%50 == 0 {
+				// 	runtime.GC()
+				// 	logMem("blah")
+				// 	writeHeapProfile(fmt.Sprintf("heap_%d.prof", itrctr))
+				// }
 				// itrctr++
-				// writeHeapProfile(fmt.Sprintf("heap_%d.prof", itrctr))
 
 			case <-stopLogging:
 				return
@@ -590,7 +596,7 @@ func TestReplayJSONDataset(t *testing.T) {
 	processingWorkerCount := 20 // Number of gateway workers processing transactions
 	submittingWorkerCount := 4  // Number of goroutines submitting transactions TO the gateway
 	ordererSubmitterCount := 8  // Number of goroutines submitting transactions TO the orderer (BatchSubmitter workers)
-	numOutstandingTx := 2000    // Maximum number of outstanding transactions
+	numOutstandingTx := 5000    // Maximum number of outstanding transactions
 
 	_, _, _ = runReplayTest(t, processingWorkerCount, submittingWorkerCount, ordererSubmitterCount, numOutstandingTx, replayConfig{windowSize: 1000000}, *gatewayConfig)
 }

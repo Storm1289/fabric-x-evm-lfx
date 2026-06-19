@@ -7,7 +7,7 @@ export UID
 export GID
 
 # Container runtime — override for rootless Podman:
-#   make start DOCKER=podman COMPOSE="podman compose"
+#   make start-x DOCKER=podman COMPOSE="podman compose"
 # Note: build-image requires docker buildx (or podman buildx).
 DOCKER  ?= docker
 COMPOSE ?= docker compose
@@ -27,7 +27,7 @@ build-release:
 .PHONY: build-image
 build-image: build-release
 	$(DOCKER) buildx build \
-		--file Dockerfile.release \
+		--file Dockerfile \
 		--load \
 		--build-arg VERSION=dev \
 		--build-arg CREATED=$(shell date -u +%Y-%m-%dT%H:%M:%SZ) \
@@ -147,55 +147,6 @@ test-fablo:
 clean-fablo:
 	cd testdata/fablo && ./fablo prune || true
 	rm -rf testdata/fablo/snapshot.fablo.tar.gz
-.PHONY: test-local
-test-local:
-	@go test -timeout 30s -v -run ^TestLocal$$ ./integration
-
-.PHONY: test-local-x
-test-local-x:
-	@go test -timeout 30s -v -run ^TestLocalX$$ ./integration
-
-.PHONY: eth-tests
-eth-tests:
-	@go test -test.fullpath=true -timeout 2000s -run ^TestEthereumTests$$ github.com/hyperledger/fabric-x-evm/integration
-	# @VERBOSE=$(VERBOSE) ./scripts/run_eth_test.sh
-
-.PHONY: eth-tests-legacy
-eth-tests-legacy:
-	@go test -test.fullpath=true -timeout 2000s -run ^TestEthereumTests$$ github.com/hyperledger/fabric-x-evm/integration -legacy
-
-.PHONY: eth-tests-slow
-eth-tests-slow:
-	@go test -test.fullpath=true -timeout 10000s -run ^TestEthereumTests$$ github.com/hyperledger/fabric-x-evm/integration -very_slow
-
-.PHONY: eth-tests-slow-legacy
-eth-tests-slow-legacy:
-	@go test -test.fullpath=true -timeout 10000s -run ^TestEthereumTests$$ github.com/hyperledger/fabric-x-evm/integration -very_slow -legacy
-
-.PHONY: start-node
-start-node:
-	@if nc -z localhost 7050 2>/dev/null; then echo "Error: port 7050 is already in use — stop any running Fabric orderer before starting."; exit 1; fi
-	@$(COMPOSE) -f compose.fabric-x.yml up -d
-	@echo "Waiting for committer to be ready..."
-	@while ! nc -z localhost 7001 2>/dev/null; do sleep 1; done
-	@$(DOCKER) run --rm --network fabric-x-evm_default \
-		--user "$(UID):$(GID)" \
-		-v "$(PWD)/testdata/fxconfig-docker.yaml:/testdata/fxconfig-docker.yaml:ro,Z" \
-		-v "$(PWD)/testdata/crypto:/testdata/crypto:ro,Z" \
-		docker.io/hyperledger/fabric-x-tools:latest \
-		fxconfig namespace create basic --policy="OR('Org1MSP.member')" \
-		--endorse --submit --wait --config=/testdata/fxconfig-docker.yaml
-	@$(COMPOSE) up -d --build gateway
-
-.PHONY: start
-start: start-node blockscout.env
-	@$(COMPOSE) --env-file blockscout.env up -d --build
-	@echo "Visit the block explorer at http://localhost:8000/ (might take a minute to load)"
-
-.PHONY: stop
-stop:
-	@$(COMPOSE) down -v
-	@$(COMPOSE) -f compose.fabric-x.yml down
 
 .PHONY: start-full
 start-full:
@@ -233,49 +184,34 @@ stop-full:
 	@$(COMPOSE) -f compose.fabric-x.full.yaml down
 	@rm -rf data/
 
-blockscout.env:
-	@echo "Generating $@..."
-	@printf 'POSTGRES_PASSWORD=%s\nSECRET_KEY_BASE=%s\n' \
-		"$$(openssl rand -hex 32)" \
-		"$$(openssl rand -hex 64)" > blockscout.env
+.PHONY: test-local
+test-local:
+	@go test -timeout 30s -v -run ^TestLocal$$ ./integration
 
-## Targets to interact with the local dev network
+.PHONY: test-local-x
+test-local-x:
+	@go test -timeout 30s -v -run ^TestLocalX$$ ./integration
 
-DEMO_RPC_URL   := http://localhost:8545
-DEMO_CHAIN_ID  := 4011
-DEMO_ADMIN_KEY := 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d
-DEMO_EXPLORER  := http://localhost:8000
-NAME           ?= My Token
-SYMBOL         ?= TKN
-SUPPLY         ?= 1000000
-AMOUNT         ?= 100
+.PHONY: eth-tests
+eth-tests:
+	@go test -test.fullpath=true -timeout 2000s -run ^TestEthereumTests$$ github.com/hyperledger/fabric-x-evm/integration
+	# @VERBOSE=$(VERBOSE) ./scripts/run_eth_test.sh
 
-.PHONY: demo-deploy
-demo-deploy:
-	@CONTRACT=$$(cast send --rpc-url $(DEMO_RPC_URL) --chain-id $(DEMO_CHAIN_ID) \
-	  --private-key $(DEMO_ADMIN_KEY) \
-	  --create "$$(cat testdata/Token.bin)$$(cast abi-encode 'constructor(string,string,uint256)' '$(NAME)' '$(SYMBOL)' '$(SUPPLY)000000000000000000' | sed 's/^0x//')" \
-	  | awk '/contractAddress/ {print $$2}') && \
-	  echo $$CONTRACT > .demo-contract && \
-	  printf '\nDeployed %s (%s): %s/address/%s\n\n' "$(NAME)" "$(SYMBOL)" "$(DEMO_EXPLORER)" "$$CONTRACT"
+.PHONY: eth-tests-legacy
+eth-tests-legacy:
+	@go test -test.fullpath=true -timeout 2000s -run ^TestEthereumTests$$ github.com/hyperledger/fabric-x-evm/integration -legacy
 
-CONTRACT ?= $(shell cat .demo-contract 2>/dev/null)
+.PHONY: eth-tests-slow
+eth-tests-slow:
+	@go test -test.fullpath=true -timeout 10000s -run ^TestEthereumTests$$ github.com/hyperledger/fabric-x-evm/integration -very_slow
 
-.PHONY: demo-transfer
-demo-transfer:
-	@test -n "$(TO)" || (echo "Usage: make demo-transfer TO=0x... [AMOUNT=100] [CONTRACT=0x...]"; exit 1)
-	@test -n "$(CONTRACT)" || (echo "No contract address. Run 'make demo-deploy' first or pass CONTRACT=0x..."; exit 1)
-	@TX=$$(cast send --rpc-url $(DEMO_RPC_URL) --chain-id $(DEMO_CHAIN_ID) \
-	    --private-key $(DEMO_ADMIN_KEY) \
-	    $(CONTRACT) "transfer(address,uint256)" \
-	    $(TO) "$(AMOUNT)000000000000000000" \
-	    | awk '/^transactionHash/ {print $$2}') && \
-	  printf '\nTransferred %s tokens to %s: %s/tx/%s\n\n' "$(AMOUNT)" "$(TO)" "$(DEMO_EXPLORER)" "$$TX"
+.PHONY: eth-tests-slow-legacy
+eth-tests-slow-legacy:
+	@go test -test.fullpath=true -timeout 10000s -run ^TestEthereumTests$$ github.com/hyperledger/fabric-x-evm/integration -very_slow -legacy
 
 .PHONY: hardhat-tests
 hardhat-tests:
 	@./scripts/run_hardhat_test.sh
-
 
 .PHONY: perf-tests
 perf-tests: pre-pull-images

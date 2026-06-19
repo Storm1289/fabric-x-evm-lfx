@@ -151,53 +151,51 @@ func buildTestHarnessWithExtraHandler(t *testing.T, logger sdk.Logger, cfg confi
 		t.Cleanup(func() { chain.Close() })
 	}
 
-	// Build submitter
+	// Build submitters (one per worker for parallel submission)
 	orderers := make([]network.OrdererConf, len(cfg.Gateway.Orderers))
 	for i, o := range cfg.Gateway.Orderers {
 		orderers[i] = o.ToOrdererConf()
 	}
 
-	var submitter core.Submitter
+	submitterCount := cfg.Gateway.SubmitterCount
+	if submitterCount <= 0 {
+		submitterCount = core.DefaultNumWorkers
+	}
+	submitters := make([]core.Submitter, submitterCount)
 	var sync *network.Synchronizer
 	var err1 error
 
 	if bypass {
-		// Use local submitter for bypass mode (no network communication)
-		submitter = local.NewLocalSubmitter(dbs[0], cfg.Network.Channel, cfg.Network.Namespace, nfab.NewTxPackager(gwSigner), bfab.NewBlockParser(logger), false)
-	} else {
-		// Create network submitter
-		switch cfg.Network.Protocol {
-		case "fabric":
-			submitter, err1 = nfab.NewSubmitter(t.Context(), orderers, gwSigner, 0, logger)
-		case "fabric-x", "":
-			submitter, err1 = nfabx.NewSubmitter(t.Context(), orderers, gwSigner, 0, logger)
-		default:
-			return nil, nil, fmt.Errorf("unsupported protocol: %q", cfg.Network.Protocol)
+		// Use local submitters for bypass mode (no network communication)
+		for i := 0; i < submitterCount; i++ {
+			submitters[i] = local.NewLocalSubmitter(dbs[0], cfg.Network.Channel, cfg.Network.Namespace, nfab.NewTxPackager(gwSigner), bfab.NewBlockParser(logger), false)
 		}
-		if err1 != nil {
-			return nil, nil, err1
-		}
-	}
-
-	// Create Store and cache for notification mode
-	var store core.Store
-	var cache *core.PendingTxCache
-	if useNotifications {
-		cache = core.NewPendingTxCache()
-		store = core.NewMemoryStore()
 	} else {
-		store = chain
+		// Create network submitters
+		for i := 0; i < submitterCount; i++ {
+			switch cfg.Network.Protocol {
+			case "fabric":
+				submitters[i], err1 = nfab.NewSubmitter(t.Context(), orderers, gwSigner, 0, logger)
+			case "fabric-x", "":
+				submitters[i], err1 = nfabx.NewSubmitter(t.Context(), orderers, gwSigner, 0, logger)
+			default:
+				return nil, nil, fmt.Errorf("unsupported protocol: %q", cfg.Network.Protocol)
+			}
+			if err1 != nil {
+				return nil, nil, fmt.Errorf("failed to create submitter %d: %w", i, err1)
+			}
+		}
 	}
 
 	// Create BatchSubmitter infrastructure
 	endorsementChan := make(chan sdk.Endorsement, 1000)
-	batchSubmitter := core.NewBatchSubmitter(submitter, cache, endorsementChan, cfg.Gateway.SubmitterCount)
+	batchSubmitter := core.NewBatchSubmitter(submitters, endorsementChan, cfg.Gateway.SubmitterCount)
 
 	batchSubmitter.Start(t.Context())
-	t.Cleanup(func() { batchSubmitter.Stop() })
 
 	// Create gateway before synchronizer so we can register it as a handler
-	gw, err := core.New(ec, submitter, store, cfg.Network.ChainID, cfg.Gateway.WorkerCount, txQueue, endorsementChan)
+	// Gateway owns the BatchSubmitter and will handle its lifecycle
+	gw, err := core.New(ec, batchSubmitter, chain, cfg.Network.ChainID, cfg.Gateway.WorkerCount, txQueue, endorsementChan)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -247,17 +245,16 @@ func buildTestHarnessWithExtraHandler(t *testing.T, logger sdk.Logger, cfg confi
 			logger.Infof("Synchronizer stopped cleanly")
 
 			// Set up AllTxStreamer notification system
-			txHandlers := make([]core.TxHandler, 0, len(dbs)+3)
+			txHandlers := make([]core.TxHandler, 0, len(dbs)+2)
 			for _, db := range dbs {
 				txHandlers = append(txHandlers, db.(core.TxHandler))
 			}
-			txHandlers = append(txHandlers, store.(core.TxHandler))
 			txHandlers = append(txHandlers, gw.TxQueue.(core.TxHandler))
 			if extraHandler != nil {
 				txHandlers = append(txHandlers, extraHandler)
 			}
 
-			dispatcher := core.NewAllTxBatchDispatcher(cache, txHandlers...)
+			dispatcher := core.NewAllTxBatchDispatcher(txHandlers...)
 
 			if cfg.Network.Protocol == "fabric-x" || cfg.Network.Protocol == "" {
 				peer, err := nfabx.NewPeer(cfg.Gateway.Committer.ToPeerConf(), cfg.Network.Channel, gwSigner)
@@ -288,8 +285,8 @@ func buildTestHarnessWithExtraHandler(t *testing.T, logger sdk.Logger, cfg confi
 	gw.Start(t.Context())
 	t.Cleanup(func() { gw.Stop() })
 
-	// Create state primer
-	primer, err := NewStatePrimer(gw, submitter, dbs[0], cfg.Network.Namespace, gwSigner, builders, cfg.Network.Channel, cfg.Network.NsVersion, cfg.Network.Protocol == "fabric-x")
+	// Create state primer (use first submitter)
+	primer, err := NewStatePrimer(gw, submitters[0], dbs[0], cfg.Network.Namespace, gwSigner, builders, cfg.Network.Channel, cfg.Network.NsVersion, cfg.Network.Protocol == "fabric-x")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -546,7 +543,7 @@ func NewFabricXTestHarnessWithFactoryAndTxQueue(t *testing.T, logger sdk.Logger,
 // Uses MemoryStore and NotificationDispatcher for better performance in replay scenarios.
 // If extraHandler is non-nil, it will be inserted into the handler chain right before the cleanup handler.
 func NewFabricXTestHarnessWithNotifications(t *testing.T, logger sdk.Logger, evmConfig endorser.EVMConfig, primeDbPath string, configOverrides map[string]any, factory EndorserFactory, txQueue core.TxQueueInterface, extraHandler core.TxHandler, confFile string) (*TestHarness, error) {
-	if !filepath.IsAbs(primeDbPath) {
+	if primeDbPath != "" && !filepath.IsAbs(primeDbPath) {
 		if abs, err := filepath.Abs(primeDbPath); err == nil {
 			primeDbPath = abs
 		}

@@ -1,5 +1,6 @@
 bin
 release
+data
 node_modules
 .gomodcache
 .vscode
@@ -10,11 +11,11 @@ testdata/*
 !testdata/configtx.yaml
 !testdata/crypto-config.yaml
 !testdata/fxconfig.yaml
-!testdata/fxconfig-docker.yaml
 !testdata/tether_txs.json
 !testdata/alloc_tether_replay.json
 !testdata/test_accounts.json
 !testdata/eth_tests.skip
+!testdata/shared_config.yaml
 *.un~
 *.swp
 !testdata/fablo
@@ -24,8 +25,6 @@ testdata/*
 !testdata/config
 testdata/fablo/fablo-target
 testdata/fablo/triedb
-blockscout.env
-.demo-contract
 
 
 # Performance testing generated files
@@ -37,3 +36,5 @@ integration/perf/*.png
 integration/perf/*.csv
 integration/perf/*.html
 integration/perf/*.json
+
+*.log
