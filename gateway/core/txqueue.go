@@ -26,6 +26,10 @@ import (
 //
 // Thread-safety: All map and slice operations are protected by the RWMutex.
 // The inProgressMap is safe for concurrent access as long as proper locking is used.
+//
+// Persistence: the queue is in-memory only. On gateway restart both
+// pendingQueue and inProgressMap are lost; clients must resubmit any
+// unconfirmed transactions.
 type TxQueue struct {
 	mu            sync.RWMutex                       // Protects all fields below
 	cond          *sync.Cond                         // Signals when new transactions arrive

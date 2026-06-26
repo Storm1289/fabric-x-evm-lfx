@@ -84,6 +84,10 @@ const (
 // - Pending map: Tracks transactions currently being processed by workers
 //
 // Thread-safety: All operations are protected by a single RWMutex.
+//
+// Persistence: the queue is in-memory only. On gateway restart the ready,
+// waiting, and pending state is lost; clients must resubmit any unconfirmed
+// transactions.
 type TxQueueV2 struct {
 	mu   sync.RWMutex
 	cond *sync.Cond

@@ -144,6 +144,8 @@ func (g *Gateway) worker(ctx context.Context) {
 		// Process the transaction (old SendTransaction logic)
 		if err := g.processTx(ctx, tx); err != nil {
 			logger.Errorf("tx %s failed: %v", tx.Hash().Hex(), err)
+			// TODO: tx stays in inProgressMap on failure and IsPending will
+			// report it pending forever. Decide drop vs retry with backoff.
 			continue
 		}
 	}
@@ -167,6 +169,9 @@ func (g *Gateway) processTx(ctx context.Context, tx *types.Transaction) error {
 func (g *Gateway) SendTransaction(ctx context.Context, tx *types.Transaction) error {
 	if err := ValidateTx(ctx, tx, g.ChainConfig, g.Signer, g); err != nil {
 		return err
+	}
+	if g.TxQueue.IsPending(tx.Hash()) != nil {
+		return domain.ErrTransactionAlreadyPending
 	}
 	g.TxQueue.Enqueue(tx)
 	return nil
