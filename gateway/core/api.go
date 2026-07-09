@@ -73,6 +73,7 @@ type Gateway struct {
 	ChainConfig     *params.ChainConfig
 	Signer          types.Signer
 	TxQueue         TxQueueInterface
+	nonceGate       *nonceGate
 	workerCount     int
 	wg              sync.WaitGroup
 	stopOnce        sync.Once
@@ -109,7 +110,7 @@ func New(ec *EndorsementClient, batchSubmitter *BatchSubmitter, store Store, cha
 	}
 
 	cid := big.NewInt(chainID)
-	return &Gateway{
+	g := &Gateway{
 		endorsers:       ec,
 		batchSubmitter:  batchSubmitter,
 		store:           store,
@@ -119,7 +120,11 @@ func New(ec *EndorsementClient, batchSubmitter *BatchSubmitter, store Store, cha
 		TxQueue:         txQueue,
 		workerCount:     workerCount,
 		endorsementChan: endorsementChan,
-	}, nil
+	}
+	// Park future-nonce transactions and release them in nonce order as earlier
+	// nonces commit (issue #52).
+	g.nonceGate = newNonceGate(g, g.Signer, g.TxQueue.Enqueue)
+	return g, nil
 }
 
 // Start initializes the worker pool to process transactions from the queue
@@ -168,8 +173,7 @@ func (g *Gateway) SendTransaction(ctx context.Context, tx *types.Transaction) er
 	if err := ValidateTx(ctx, tx, g.ChainConfig, g.Signer, g); err != nil {
 		return err
 	}
-	g.TxQueue.Enqueue(tx)
-	return nil
+	return g.nonceGate.Admit(ctx, tx)
 }
 
 // CallContract is a query. It doesn't require a signature of the end user and doesn't change the ledger or nonce.
@@ -302,8 +306,13 @@ func (g *Gateway) NonceAt(ctx context.Context, account common.Address, blockNumb
 //
 // The pending status is signaled by BlockNumber=0, which the API layer converts to null.
 func (g *Gateway) TransactionByHash(ctx context.Context, hash common.Hash) (*domain.Transaction, error) {
-	// Check if transaction is pending in the queue (either waiting or being processed)
-	if pendingTx := g.TxQueue.IsPending(hash); pendingTx != nil {
+	// Check if transaction is pending in the queue (either waiting or being
+	// processed) or parked awaiting an earlier nonce.
+	pendingTx := g.TxQueue.IsPending(hash)
+	if pendingTx == nil {
+		pendingTx = g.nonceGate.IsPending(hash)
+	}
+	if pendingTx != nil {
 		// Transaction is pending - return it with zero block fields
 		// The API layer will convert these to nil in the JSON response
 		rawTx, err := pendingTx.MarshalBinary()
@@ -399,6 +408,10 @@ func (g *Gateway) Stop() error {
 func (g *Gateway) Handle(ctx context.Context, b blocks.Block) error {
 	// Convert blocks.Block to domain.Block using the shared conversion function
 	domainBlock := ConvertToDomain(b)
-	err := g.TxQueue.Handle(ctx, &domainBlock)
-	return err
+	if err := g.TxQueue.Handle(ctx, &domainBlock); err != nil {
+		return err
+	}
+	// Release parked transactions whose earlier nonces just committed.
+	g.nonceGate.Released(ctx, domainBlock.Transactions)
+	return nil
 }
