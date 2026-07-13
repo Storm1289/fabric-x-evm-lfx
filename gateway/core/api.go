@@ -178,12 +178,11 @@ func (g *Gateway) SendTransaction(ctx context.Context, tx *types.Transaction) er
 	if err := ValidateTx(ctx, tx, g.ChainConfig, g.Signer, g); err != nil {
 		return err
 	}
-	return g.nonceGate.Admit(ctx, tx)
-	if g.TxQueue.IsPending(tx.Hash()) != nil {
+	// Reject a resubmission already in the queue or parked awaiting an earlier nonce.
+	if g.TxQueue.IsPending(tx.Hash()) != nil || g.nonceGate.IsPending(tx.Hash()) != nil {
 		return domain.ErrTransactionAlreadyPending
 	}
-	g.TxQueue.Enqueue(tx)
-	return nil
+	return g.nonceGate.Admit(ctx, tx)
 }
 
 // CallContract is a query. It doesn't require a signature of the end user and doesn't change the ledger or nonce.

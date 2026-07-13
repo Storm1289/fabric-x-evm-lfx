@@ -34,6 +34,7 @@ func TestSendTransaction_DuplicateRejected(t *testing.T) {
 		TxQueue:     NewTxQueue(),
 		endorsers:   newClient(nonceStub()),
 	}
+	g.nonceGate = newNonceGate(g, g.Signer, g.TxQueue.Enqueue)
 
 	tx := newValidTx(t, key, validTxOpts{nonce: 0})
 
