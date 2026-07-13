@@ -23,8 +23,10 @@ import (
 )
 
 type stubEndorser struct {
-	callResp *peer.ProposalResponse
-	callErr  error
+	callResp  *peer.ProposalResponse
+	callErr   error
+	queryResp *peer.ProposalResponse
+	queryErr  error
 }
 
 func (s *stubEndorser) ProcessEVMTransaction(ctx context.Context, inv endorsement.Invocation, ethTx *types.Transaction) (*peer.ProposalResponse, error) {
@@ -34,7 +36,7 @@ func (s *stubEndorser) ProcessCall(ctx context.Context, callMsg *ethereum.CallMs
 	return s.callResp, s.callErr
 }
 func (s *stubEndorser) ProcessStateQuery(ctx context.Context, query common.StateQuery) (*peer.ProposalResponse, error) {
-	return nil, nil
+	return s.queryResp, s.queryErr
 }
 
 func newClient(stub *stubEndorser) *EndorsementClient {

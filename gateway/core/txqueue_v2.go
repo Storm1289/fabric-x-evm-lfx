@@ -85,6 +85,10 @@ const (
 // - Pending map: Tracks transactions currently being processed by workers
 //
 // Thread-safety: All operations are protected by a single RWMutex.
+//
+// Persistence: the queue is in-memory only. On gateway restart the ready,
+// waiting, and pending state is lost; clients must resubmit any unconfirmed
+// transactions.
 type TxQueueV2 struct {
 	mu   sync.RWMutex
 	cond *sync.Cond
@@ -281,6 +285,21 @@ func (q *TxQueueV2) Dequeue() (*types.Transaction, bool) {
 		if q.done {
 			return nil, false
 		}
+	}
+}
+
+// Complete removes a transaction from tracking and promotes any transactions
+// that were blocked by it. Safe to call for a hash that is not currently
+// tracked.
+func (q *TxQueueV2) Complete(hash common.Hash) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	promoted := q.completeUnlocked(hash)
+	if promoted == 1 {
+		q.cond.Signal()
+	} else if promoted > 1 {
+		q.cond.Broadcast()
 	}
 }
 
