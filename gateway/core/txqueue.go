@@ -13,6 +13,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/hyperledger/fabric-x-common/api/committerpb"
+	cmn "github.com/hyperledger/fabric-x-evm/common"
 	"github.com/hyperledger/fabric-x-evm/gateway/domain"
 )
 
@@ -147,7 +148,7 @@ func (q *TxQueue) Handle(ctx context.Context, block *domain.Block) error {
 
 // HandleTx implements the TxHandler interface for processing transaction notifications.
 // It extracts ethereum transaction hashes from the notifications and marks them as complete.
-func (q *TxQueue) HandleTx(ctx context.Context, notifs []TxNotification) error {
+func (q *TxQueue) HandleTx(ctx context.Context, notifs []cmn.TxNotification) error {
 	for _, notif := range notifs {
 		q.mu.Lock()
 		q.total++

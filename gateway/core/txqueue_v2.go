@@ -16,6 +16,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/hyperledger/fabric-lib-go/common/flogging"
 	"github.com/hyperledger/fabric-x-common/api/committerpb"
+	cmn "github.com/hyperledger/fabric-x-evm/common"
 	"github.com/hyperledger/fabric-x-evm/gateway/domain"
 )
 
@@ -409,7 +410,7 @@ func (q *TxQueueV2) Handle(ctx context.Context, block *domain.Block) error {
 // Returns (total transactions processed, invalid transactions).
 // HandleTx processes transaction notifications and marks transactions as complete.
 // This method implements the TxHandler interface for use with the notification system.
-func (q *TxQueueV2) HandleTx(ctx context.Context, notifs []TxNotification) error {
+func (q *TxQueueV2) HandleTx(ctx context.Context, notifs []cmn.TxNotification) error {
 	// Pre-extract transaction hashes and statuses outside the lock
 	numNotifs := len(notifs)
 	txHashes := make([]common.Hash, numNotifs)
