@@ -49,6 +49,10 @@ type TxQueueInterface interface {
 	// IsPending checks if a transaction is currently in the queue or being processed
 	IsPending(txHash common.Hash) *types.Transaction
 
+	// Complete removes a transaction from tracking. Safe to call for a hash
+	// that is not currently tracked.
+	Complete(txHash common.Hash)
+
 	// Close signals shutdown of the queue
 	Close()
 
@@ -149,6 +153,7 @@ func (g *Gateway) worker(ctx context.Context) {
 		// Process the transaction (old SendTransaction logic)
 		if err := g.processTx(ctx, tx); err != nil {
 			logger.Errorf("tx %s failed: %v", tx.Hash().Hex(), err)
+			g.TxQueue.Complete(tx.Hash())
 			continue
 		}
 	}
@@ -174,6 +179,11 @@ func (g *Gateway) SendTransaction(ctx context.Context, tx *types.Transaction) er
 		return err
 	}
 	return g.nonceGate.Admit(ctx, tx)
+	if g.TxQueue.IsPending(tx.Hash()) != nil {
+		return domain.ErrTransactionAlreadyPending
+	}
+	g.TxQueue.Enqueue(tx)
+	return nil
 }
 
 // CallContract is a query. It doesn't require a signature of the end user and doesn't change the ledger or nonce.
