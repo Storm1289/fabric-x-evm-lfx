@@ -258,3 +258,39 @@ func TestNonceGate_StateErrorPropagates(t *testing.T) {
 	err := gate.Admit(context.Background(), newValidTx(t, key, validTxOpts{nonce: 5}))
 	require.ErrorIs(t, err, state.err)
 }
+
+func TestNonceGate_AdmitSenderRecoverError(t *testing.T) {
+	key := newKey(t)
+	gate, _ := newTestGate(newStubState())
+
+	// Signed for a different chain id, so the gate's signer cannot recover the sender.
+	to := common.HexToAddress("0x1111111111111111111111111111111111111111")
+	raw := types.NewTransaction(0, to, big.NewInt(0), 21_000, big.NewInt(1), nil)
+	tx, err := types.SignTx(raw, types.NewEIP155Signer(big.NewInt(testChainID+1)), key)
+	require.NoError(t, err)
+
+	require.Error(t, gate.Admit(context.Background(), tx))
+}
+
+func TestNonceGate_ReleasedNonceLookupError(t *testing.T) {
+	key := newKey(t)
+	from := senderAddr(key)
+	state := newStubState()
+	state.set(from, 5)
+	gate, sink := newTestGate(state)
+
+	require.NoError(t, gate.Admit(context.Background(), newValidTx(t, key, validTxOpts{nonce: 6})))
+
+	// A failing nonce lookup during release is logged and skipped, admitting nothing.
+	state.err = errors.New("boom")
+	gate.Released(context.Background(), committedBlock(from))
+	require.Empty(t, sink.nonces())
+}
+
+func TestNonceGate_ReleaseSenderUntrackedNoop(t *testing.T) {
+	gate, sink := newTestGate(newStubState())
+
+	// No parked txs for this sender: releasing is a no-op.
+	gate.releaseSender(common.HexToAddress("0x2222222222222222222222222222222222222222"), 0)
+	require.Empty(t, sink.nonces())
+}
