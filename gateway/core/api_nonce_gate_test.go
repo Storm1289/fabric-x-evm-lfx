@@ -8,17 +8,30 @@ package core
 
 import (
 	"context"
+	"errors"
 	"testing"
 
+	"github.com/hyperledger/fabric-x-evm/gateway/domain"
 	"github.com/hyperledger/fabric-x-sdk/blocks"
 	"github.com/stretchr/testify/require"
 )
 
+// errHandleQueue is a TxQueue whose Handle always fails, to exercise the
+// block-handling error path.
+type errHandleQueue struct {
+	*TxQueue
+	err error
+}
+
+func (q *errHandleQueue) Handle(context.Context, *domain.Block) error { return q.err }
+
 func TestNew_InitializesNonceGate(t *testing.T) {
-	g, err := New(nil, nil, nil, testChainID, 1, nil, nil)
+	// workerCount 0 and a nil queue exercise both constructor defaults.
+	g, err := New(nil, nil, nil, testChainID, 0, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, g.nonceGate)
 	require.NotNil(t, g.TxQueue)
+	require.Equal(t, 1, g.workerCount)
 }
 
 func gatewayWithGate(t *testing.T) *Gateway {
@@ -55,4 +68,18 @@ func TestSendTransaction_FutureNonceParked(t *testing.T) {
 func TestHandle_EmptyBlockReleasesNothing(t *testing.T) {
 	g := gatewayWithGate(t)
 	require.NoError(t, g.Handle(context.Background(), blocks.Block{}))
+}
+
+func TestHandle_QueueErrorPropagates(t *testing.T) {
+	cfg, signer := chainCtx(t)
+	boom := errors.New("queue handle failed")
+	g := &Gateway{
+		ChainConfig: cfg,
+		Signer:      signer,
+		TxQueue:     &errHandleQueue{TxQueue: NewTxQueue(), err: boom},
+		endorsers:   newClient(nonceStub()),
+	}
+	g.nonceGate = newNonceGate(g, g.Signer, g.TxQueue.Enqueue)
+
+	require.ErrorIs(t, g.Handle(context.Background(), blocks.Block{}), boom)
 }
