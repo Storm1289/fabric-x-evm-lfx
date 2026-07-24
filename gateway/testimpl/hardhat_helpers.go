@@ -47,6 +47,15 @@ func (api *HardhatAPI) SetCode(ctx context.Context, address common.Address, code
 	return true, nil
 }
 
+// Mine accepts hardhat_mine for RPC compatibility with Hardhat tests.
+// It does not advance chain state: fabric-evm creates blocks via Fabric
+// consensus, not mining. Optional blocks/interval params match Hardhat's
+// signature and are ignored.
+func (api *HardhatAPI) Mine(ctx context.Context, blocks *hexutil.Uint64, interval *hexutil.Uint64) error {
+	hardhatLogger.Debugf("HardhatAPI.Mine() called blocks=%v interval=%v (stub; no state change)", blocks, interval)
+	return nil
+}
+
 // EvmAPI provides EVM-specific RPC methods for testing, particularly snapshot/revert.
 // Uses LightKVS history mechanism to capture and restore ledger state, and Store
 // for database snapshot/revert.
