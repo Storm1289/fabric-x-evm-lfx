@@ -18,10 +18,11 @@ diff: new unlisted failure → regression; listed test that now passes → stale
 instead of a list someone has to remember to prune by hand. It makes the approach consistent and
 measurable.
 
-**Currently wired up for OpenZeppelin only, not yet used anywhere in CI.** The `--format` flag
-exists so a `go test -json` adapter can be added later for `TestEthereumTests`, replacing
-`eth_tests.skip`/`.slow` with the same mechanism at per-subtest granularity — not built yet, but the
-reason the result model and CLI are format-agnostic rather than Mocha-specific.
+**Currently wired up for OpenZeppelin only** — gates every PR via the `oz-hardhat-compat` job in
+[`tests.yml`](../../.github/workflows/tests.yml). The `--format` flag exists so a `go test -json`
+adapter can be added later for `TestEthereumTests`, replacing `eth_tests.skip`/`.slow` with the same
+mechanism at per-subtest granularity — not built yet, but the reason the result model and CLI are
+format-agnostic rather than Mocha-specific.
 
 ## After bumping `testdata/openzeppelin-contracts`
 
@@ -63,21 +64,28 @@ one run gives both, instead of picking one or the other.
 ## Check (the CI gate)
 
 ```shell
-go run ./cmd/baseline check \
-  --suite oz-hardhat \
-  --baseline testdata/oz_known_failures.json \
-  --results 'testdata/oz-hardhat-results/*.json'
+go run ./cmd/baseline check --suite oz-hardhat
 ```
+
+A known `--suite` (currently just `oz-hardhat`) already implies `--baseline testdata/oz_known_failures.json`
+and `--results 'testdata/oz-hardhat-results/*.json'` — pass either flag explicitly to override, e.g.
+against a scratch baseline or a single results file (see the worked examples below, which do exactly
+that).
 
 Prints a summary and exits non-zero if anything regressed:
 - a failure that isn't in the baseline (a real regression), or
 - a baseline entry that's no longer failing (stale — remove it).
 
+`--json` prints a machine-readable `Summary` instead (same counts, regressions, stale entries, and
+cause histogram, structured rather than prose) — for a caller building its own presentation, e.g. the
+PR-comment bot in [`baseline-report-comment.yml`](../../.github/workflows/baseline-report-comment.yml),
+instead of re-parsing the human-readable report. Same exit code either way.
+
 `--results` is a glob (matched with `filepath.Glob`, so quote it against your shell expanding it
 early) that merges several files — useful since a Mocha file that crashes at load time can zero out
 the whole report for that invocation, so running per-file/per-directory and merging is safer than one
 giant run. `testdata/oz-hardhat-results/` is exactly what `scripts/run_hardhat_test.sh --full` writes
-one file per top-level `test/` directory into, so the command above works as-is after a real run.
+one file per top-level `test/` directory into, so `--suite oz-hardhat` alone works as-is after a real run.
 
 Sample output, an empty baseline against a real run of `ERC20Permit.test.js` (regressions, since
 nothing is listed yet):
@@ -124,11 +132,10 @@ needs the most work — and watch that shrink over time as fixes land.
 ## Update (seed or reconcile the baseline)
 
 ```shell
-go run ./cmd/baseline update \
-  --suite oz-hardhat \
-  --baseline testdata/oz_known_failures.json \
-  --results 'testdata/oz-hardhat-results/*.json'
+go run ./cmd/baseline update --suite oz-hardhat
 ```
+
+Same `--suite` defaulting as `check` above; pass `--baseline`/`--results` explicitly to override.
 
 Rewrites the baseline file: drops stale entries, adds an entry for every new failure — auto-tagging
 `cause` for the high-confidence signatures `inferCause` recognizes, leaving the rest blank for a
@@ -163,14 +170,11 @@ $ cat testdata/oz_known_failures.json
 ## Tag (bulk-assign a cause)
 
 ```shell
-go run ./cmd/baseline tag \
-  --baseline testdata/oz_known_failures.json \
-  --results 'testdata/oz-hardhat-results/*.json' \
-  --match "Packing" \
-  --cause "max-code-size"
+go run ./cmd/baseline tag --suite oz-hardhat --match "Packing" --cause "max-code-size"
 ```
 
-Sets `cause` (and optionally `--note`) on every still-failing entry whose ID or current message
+Same `--suite` defaulting as `check`/`update` above; pass `--baseline`/`--results` explicitly to
+override. Sets `cause` (and optionally `--note`) on every still-failing entry whose ID or current message
 contains `--match` — for a symptom that's too broad or too varied in wording for `inferCause` to
 recognize automatically, but that a human can look at once and confidently label in bulk (e.g. a
 whole describe block, or a message fragment shared across many tests). Entries that already have a
