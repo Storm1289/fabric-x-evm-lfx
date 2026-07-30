@@ -56,6 +56,20 @@ func (api *HardhatAPI) Mine(ctx context.Context, blocks *hexutil.Uint64, interva
 	return nil
 }
 
+// ImpersonateAccount accepts hardhat_impersonateAccount for RPC compatibility.
+// It does not enable signing or sending as the given address.
+func (api *HardhatAPI) ImpersonateAccount(ctx context.Context, address common.Address) error {
+	hardhatLogger.Debugf("HardhatAPI.ImpersonateAccount() called address=%s (stub; no state change)", address.Hex())
+	return nil
+}
+
+// StopImpersonatingAccount accepts hardhat_stopImpersonatingAccount for RPC
+// compatibility. It is a no-op companion to ImpersonateAccount.
+func (api *HardhatAPI) StopImpersonatingAccount(ctx context.Context, address common.Address) error {
+	hardhatLogger.Debugf("HardhatAPI.StopImpersonatingAccount() called address=%s (stub; no state change)", address.Hex())
+	return nil
+}
+
 // EvmAPI provides EVM-specific RPC methods for testing, particularly snapshot/revert.
 // Uses LightKVS history mechanism to capture and restore ledger state, and Store
 // for database snapshot/revert.
@@ -207,6 +221,13 @@ func (api *EvmAPI) Mine(ctx context.Context) (string, error) {
 	// Return success to allow tests to proceed
 	hardhatLogger.Debugf("EvmAPI.Mine() returning: 0x0")
 	return "0x0", nil
+}
+
+// SetAutomine accepts evm_setAutomine for RPC compatibility with Hardhat tests.
+// It does not change mining mode: block production is driven by Fabric consensus.
+func (api *EvmAPI) SetAutomine(ctx context.Context, enabled bool) error {
+	hardhatLogger.Debugf("EvmAPI.SetAutomine() called enabled=%v (stub; no state change)", enabled)
+	return nil
 }
 
 // IncreaseTime increases the timestamp of the next block (evm_increaseTime).

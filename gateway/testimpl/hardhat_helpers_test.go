@@ -8,6 +8,7 @@ package testimpl
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -18,14 +19,30 @@ import (
 	"github.com/hyperledger/fabric-x-evm/gateway/domain"
 )
 
-func TestHardhatAPI_Mine_RPCRegistration(t *testing.T) {
+func dialHardhat(t *testing.T) *rpc.Client {
+	t.Helper()
 	srv := rpc.NewServer()
 	if err := srv.RegisterName("hardhat", NewHardhatAPI()); err != nil {
 		t.Fatalf("RegisterName hardhat: %v", err)
 	}
-
 	client := rpc.DialInProc(srv)
-	defer client.Close()
+	t.Cleanup(client.Close)
+	return client
+}
+
+func dialEvm(t *testing.T) *rpc.Client {
+	t.Helper()
+	srv := rpc.NewServer()
+	if err := srv.RegisterName("evm", NewEvmAPI(&mockRevertibleKVS{}, &mockRevertibleStore{}, &txFence{})); err != nil {
+		t.Fatalf("RegisterName evm: %v", err)
+	}
+	client := rpc.DialInProc(srv)
+	t.Cleanup(client.Close)
+	return client
+}
+
+func TestHardhatAPI_Mine_RPCRegistration(t *testing.T) {
+	client := dialHardhat(t)
 
 	// Hardhat accepts zero, one, or two optional hex quantities.
 	cases := []struct {
@@ -52,6 +69,29 @@ func TestHardhatAPI_Mine_RPCRegistration(t *testing.T) {
 				t.Fatalf("result = %#v, want nil", result)
 			}
 		})
+	}
+}
+
+func TestEvmAPI_SetAutomine_RPCRegistration(t *testing.T) {
+	client := dialEvm(t)
+	for _, enabled := range []bool{true, false} {
+		t.Run(fmt.Sprintf("%v", enabled), func(t *testing.T) {
+			var result any
+			if err := client.CallContext(context.Background(), &result, "evm_setAutomine", enabled); err != nil {
+				t.Fatalf("evm_setAutomine: %v", err)
+			}
+			if result != nil {
+				t.Fatalf("result = %#v, want nil", result)
+			}
+		})
+	}
+}
+
+func TestEvmAPI_SetAutomine_MissingArg(t *testing.T) {
+	client := dialEvm(t)
+	var result any
+	if err := client.CallContext(context.Background(), &result, "evm_setAutomine"); err == nil {
+		t.Fatal("expected error for missing argument")
 	}
 }
 
@@ -166,5 +206,37 @@ func TestEvmAPI_RevertWaitsForInFlightTransaction(t *testing.T) {
 	want := []string{"committed", "revert"}
 	if len(events) != len(want) || events[0] != want[0] || events[1] != want[1] {
 		t.Fatalf("event order = %v, want %v", events, want)
+	}
+}
+
+func TestHardhatAPI_ImpersonateAccount_RPCRegistration(t *testing.T) {
+	client := dialHardhat(t)
+	const addr = "0x364d6D0333432C3Ac016Ca832fb8594A8cE43Ca6"
+
+	var result any
+	if err := client.CallContext(context.Background(), &result, "hardhat_impersonateAccount", addr); err != nil {
+		t.Fatalf("hardhat_impersonateAccount: %v", err)
+	}
+	if result != nil {
+		t.Fatalf("result = %#v, want nil", result)
+	}
+
+	if err := client.CallContext(context.Background(), &result, "hardhat_stopImpersonatingAccount", addr); err != nil {
+		t.Fatalf("hardhat_stopImpersonatingAccount: %v", err)
+	}
+	if result != nil {
+		t.Fatalf("result = %#v, want nil", result)
+	}
+}
+
+func TestHardhatAPI_ImpersonateAccount_MissingAddress(t *testing.T) {
+	client := dialHardhat(t)
+
+	var result any
+	if err := client.CallContext(context.Background(), &result, "hardhat_impersonateAccount"); err == nil {
+		t.Fatal("expected error for missing address")
+	}
+	if err := client.CallContext(context.Background(), &result, "hardhat_stopImpersonatingAccount"); err == nil {
+		t.Fatal("expected error for missing address")
 	}
 }
