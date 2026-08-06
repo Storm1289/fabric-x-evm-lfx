@@ -90,6 +90,11 @@ func NewTestServer(b api.Backend, testAccounts []common.Address, testAccountKeys
 		return nil, err
 	}
 
+	// personal_sign for EIP-191 message signing (ethers.js signMessage)
+	if err := srv.RegisterName("personal", NewPersonalAPI(testAccountKeys)); err != nil {
+		return nil, err
+	}
+
 	return srv, nil
 }
 

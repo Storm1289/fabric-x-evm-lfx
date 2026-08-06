@@ -155,6 +155,89 @@ func TestRevertibleLightKVS_RevertThenContinue(t *testing.T) {
 	}
 }
 
+// TestRevertibleLightKVS_NewSnapshot_SkipsEmptyBlocks ensures historical reads
+// find state when Fabric block numbers advance without an Update for empty blocks
+// (hop-by-distance lookup used to miss those snapshots).
+func TestRevertibleLightKVS_NewSnapshot_SkipsEmptyBlocks(t *testing.T) {
+	kvs := NewRevertibleLightKVS(NewLightKVS(8))
+
+	// Blocks 1 and 5 wrote; 2–4 were empty (no Update).
+	if err := kvs.Update([]KeyValueVersion{
+		{Key: "ns1:key1", Value: []byte("v1"), BlockNum: 1, TxNum: 0, TxID: "tx1"},
+	}); err != nil {
+		t.Fatalf("Update block 1: %v", err)
+	}
+	if err := kvs.Update([]KeyValueVersion{
+		{Key: "ns1:key1", Value: []byte("v5"), BlockNum: 5, TxNum: 0, TxID: "tx5"},
+	}); err != nil {
+		t.Fatalf("Update block 5: %v", err)
+	}
+
+	// Read as-of block 3: no entry for 3, but state is still v1 from block 1.
+	reader, err := kvs.NewSnapshot(3)
+	if err != nil {
+		t.Fatalf("NewSnapshot(3): %v", err)
+	}
+	defer reader.Close()
+
+	rec, err := reader.Get("ns1", "key1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if rec == nil || string(rec.Value) != "v1" {
+		t.Fatalf("expected key1=v1 at block 3, got %+v", rec)
+	}
+
+	// Exact match at block 1 still works.
+	r1, err := kvs.NewSnapshot(1)
+	if err != nil {
+		t.Fatalf("NewSnapshot(1): %v", err)
+	}
+	defer r1.Close()
+	rec1, err := r1.Get("ns1", "key1")
+	if err != nil {
+		t.Fatalf("Get at 1: %v", err)
+	}
+	if rec1 == nil || string(rec1.Value) != "v1" {
+		t.Fatalf("expected key1=v1 at block 1, got %+v", rec1)
+	}
+
+	// At or past current returns latest (v5).
+	rLatest, err := kvs.NewSnapshot(5)
+	if err != nil {
+		t.Fatalf("NewSnapshot(5): %v", err)
+	}
+	defer rLatest.Close()
+	recLatest, err := rLatest.Get("ns1", "key1")
+	if err != nil {
+		t.Fatalf("Get latest: %v", err)
+	}
+	if recLatest == nil || string(recLatest.Value) != "v5" {
+		t.Fatalf("expected key1=v5 at block 5, got %+v", recLatest)
+	}
+}
+
+// TestRevertibleLightKVS_NewSnapshot_NotFound covers the error path when no
+// preserved snapshot is at or before the requested block (e.g. history slots
+// cleared while current has already advanced).
+func TestRevertibleLightKVS_NewSnapshot_NotFound(t *testing.T) {
+	kvs := NewRevertibleLightKVS(NewLightKVS(4))
+
+	if err := kvs.Update([]KeyValueVersion{
+		{Key: "ns1:key1", Value: []byte("v10"), BlockNum: 10, TxNum: 0, TxID: "tx10"},
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	// Drop the only history entry (pre-update empty snapshot) so nothing
+	// older than current remains.
+	kvs.History[0].Store(nil)
+
+	if _, err := kvs.NewSnapshot(3); err == nil {
+		t.Fatal("expected error when no history exists at or before block 3")
+	}
+}
+
 // TestRevertibleLightKVS_HistoryExhaustedPanics documents the deliberate trade-off:
 // unlike plain LightKVS (which wraps forever), a revert-capable instance panics once
 // its bounded history window fills up, since a wrapping ring buffer can't guarantee

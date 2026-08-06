@@ -44,7 +44,8 @@ jobs:
   oz-hardhat-compat:
     name: OZ Hardhat Compatibility
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Full suite needs headroom once more tests get past early failures.
+    timeout-minutes: 25
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
