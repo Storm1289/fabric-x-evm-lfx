@@ -23,6 +23,7 @@ import (
 	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/ethereum/go-ethereum/tests"
 	"github.com/hyperledger/fabric-x-evm/endorser/execution"
+	"github.com/hyperledger/fabric-x-evm/gateway/core"
 	"github.com/hyperledger/fabric-x-evm/integration/contracts"
 	"google.golang.org/grpc/grpclog"
 	_ "modernc.org/sqlite"
@@ -136,7 +137,16 @@ func TestLocalX(t *testing.T) {
 	}
 }
 
-// TestFablo requires a Fablo network to be running.
+// fabloPeerCAs are the CAs each Fablo endorser accepts callers from, so that
+// the gateway can reach either org's endorser.
+var fabloPeerCAs = []string{
+	"../testdata/fablo/fablo-target/fabric-config/crypto-config/peerOrganizations/org1.example.com/peers/peer0.org1.example.com/tls/ca.crt",
+	"../testdata/fablo/fablo-target/fabric-config/crypto-config/peerOrganizations/org2.example.com/peers/peer0.org2.example.com/tls/ca.crt",
+}
+
+// TestFablo requires a Fablo network to be running. org1 and org2 each run as
+// a standalone endorser reached over gRPC, and the chaincode is committed with
+// AND('Org1MSP.member','Org2MSP.member'), so both must endorse.
 func TestFablo(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping Fablo test in short mode")
@@ -144,9 +154,11 @@ func TestFablo(t *testing.T) {
 	// silence GRPC logging
 	grpclog.SetLoggerV2(grpclog.NewLoggerV2(io.Discard, os.Stderr, os.Stderr))
 
+	endorserConfigs := []string{"fablo-org1.yaml", "fablo-org2.yaml"}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			th, err := newFileConfigHarness(t, TestLogger{T: t}, evmConfig(tc.fork), tc.primeDbPath, "fablo.yaml", tc.overrides)
+			th, err := newSplitFileConfigHarness(t, TestLogger{T: t}, evmConfig(tc.fork), tc.primeDbPath,
+				"fablo.yaml", endorserConfigs, fabloPeerCAs, tc.overrides)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -174,6 +186,40 @@ func TestFabricX(t *testing.T) {
 			tc.fn(t, th)
 		})
 	}
+
+	// A successful commit here needs signatures from both org1 and org2.
+	t.Run("two_of_two_endorsement_policy", func(t *testing.T) {
+		testTwoOfTwoEndorsementGRPC(t)
+	})
+}
+
+// testTwoOfTwoEndorsementGRPC runs org1's and org2's endorsers as separate,
+// real processes reached over gRPC, and points a split-deployment gateway at
+// both.
+func testTwoOfTwoEndorsementGRPC(t *testing.T) {
+	org1Addr := startEndorserGRPCServer(t, "fabx-2of2-org1.yaml", []string{
+		"../testdata/crypto/peerOrganizations/org1.example.com/tlsca/tlsca.org1.example.com-cert.pem",
+		"../testdata/crypto/peerOrganizations/org2.example.com/tlsca/tlsca.org2.example.com-cert.pem",
+	})
+	org2Addr := startEndorserGRPCServer(t, "fabx-2of2-org2.yaml", []string{
+		"../testdata/crypto/peerOrganizations/org1.example.com/tlsca/tlsca.org1.example.com-cert.pem",
+		"../testdata/crypto/peerOrganizations/org2.example.com/tlsca/tlsca.org2.example.com-cert.pem",
+	})
+
+	application, chainConfig := buildSplitGatewayApp(t, "fabx-2of2.yaml", org1Addr, org2Addr)
+	gw := application.Gateway()
+
+	ethClient, err := NewEthClient(contracts.HelloMetaData, chainConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	addr := deploySmartContract(t, gw, ethClient)
+
+	greeting := "Hello from a 2-of-2 endorsed transaction"
+	callSmartContract(t, ethClient, addr, gw, "setGreeting", greeting)
+
+	querySmartContractExpect(t, ethClient, addr, &TestHarness{Gateways: []*core.Gateway{gw}}, greeting, "greet")
 }
 
 // evmConfig returns an empty EVMConfig, or, if the name of an ethereum fork
