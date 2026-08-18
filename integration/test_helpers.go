@@ -581,7 +581,7 @@ func NewEndorser(t *testing.T, cfg econf.Endorser, channel, namespace string, ev
 		}
 	}
 
-	end, db, builder, err := eapp.NewEndorserCore(cfg.Database, channel, namespace, protocol, signer, evmConfig, false)
+	end, db, builder, err := eapp.NewEndorserCore(cfg.Database, channel, namespace, protocol, signer, evmConfig, false, econf.Endorser{})
 	if err != nil {
 		t.Fatalf("NewEndorserCore: %v", err)
 	}

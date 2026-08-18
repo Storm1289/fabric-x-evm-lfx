@@ -13,6 +13,7 @@ import (
 	"math/big"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum"
 	ethcommon "github.com/ethereum/go-ethereum/common"
@@ -34,9 +35,12 @@ type stubEndorser struct {
 	code        []byte
 	execResp    *peer.ProposalResponse
 	execErr     error
+	// lastTS is the timestamp from the most recent Execute call.
+	lastTS time.Time
 }
 
-func (s *stubEndorser) Execute(ctx context.Context, inv endorsement.Invocation, ethTx *types.Transaction) (*peer.ProposalResponse, error) {
+func (s *stubEndorser) Execute(ctx context.Context, inv endorsement.Invocation, ethTx *types.Transaction, ts time.Time) (*peer.ProposalResponse, error) {
+	s.lastTS = ts
 	return s.execResp, s.execErr
 }
 func (s *stubEndorser) Call(ctx context.Context, msg *ethereum.CallMsg, _ *big.Int) ([]byte, error) {
@@ -236,6 +240,37 @@ func TestExecuteTransaction_Success(t *testing.T) {
 	}
 	if end.Proposal == nil {
 		t.Error("Proposal = nil, want non-nil")
+	}
+}
+
+// Every endorser must see the same gateway-stamped timestamp.
+func TestExecuteTransaction_SameTimestampForAllEndorsers(t *testing.T) {
+	pResp := &peer.ProposalResponse{Response: &peer.Response{Status: common.StatusOK}}
+	a := &stubEndorser{execResp: pResp}
+	b := &stubEndorser{execResp: pResp}
+	c := &EndorsementClient{
+		endorsers: []api.Service{a, b},
+		signer:    stubSigner{},
+		channel:   "ch",
+		namespace: "ns",
+		nsVersion: "1.0",
+	}
+	tx := types.NewTx(&types.LegacyTx{Gas: 21000, GasPrice: big.NewInt(0)})
+
+	before := time.Now()
+	if _, err := c.ExecuteTransaction(context.Background(), tx); err != nil {
+		t.Fatalf("ExecuteTransaction: %v", err)
+	}
+	after := time.Now()
+
+	if a.lastTS.IsZero() || b.lastTS.IsZero() {
+		t.Fatal("expected both endorsers to receive a timestamp")
+	}
+	if !a.lastTS.Equal(b.lastTS) {
+		t.Fatalf("endorsers got different timestamps: %v vs %v", a.lastTS, b.lastTS)
+	}
+	if a.lastTS.Before(before.Add(-time.Second)) || a.lastTS.After(after.Add(time.Second)) {
+		t.Fatalf("timestamp %v outside [before, after] window", a.lastTS)
 	}
 }
 

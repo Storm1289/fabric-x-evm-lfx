@@ -264,19 +264,39 @@ network values.
 | `DIFFICULTY` / `PREVRANDAO` | `0x000…` (stub — do not rely on for randomness) | current random / difficulty |
 | `BASEFEE`                   | `0`                                             | actual EIP-1559 base fee    |
 | `BLOBBASEFEE`               | ~1 wei (calculated from `ExcessBlobGas = 0`)    | actual EIP-4844 blob fee    |
-| `TIMESTAMP`                 | always `1_000_000`                              | actual Unix timestamp       |
+| `TIMESTAMP`                 | gateway-supplied Unix second on **tx execute** (required); wall clock on **eth_call** (see below) | actual Unix timestamp of the block |
 | `NUMBER`                    | `0` on tx execution; block arg on `eth_call`    | Ethereum block number       |
 
-**Current gateway behaviour**: the executor builds the EVM `BlockContext` from defaults; there is
-no per-call block-info plumbing. For **transaction execution** the EVM `NUMBER` is `0` (the block
-context number is never set) and `TIMESTAMP` is `1_000_000`, even though the state is read from the
-latest committed block. So `block.number` inside an executed transaction always reads `0`.
+**Transaction execution (`TIMESTAMP`)**: the gateway stamps wall time once per
+`ExecuteTransaction` and sends the same value to every endorser. The timestamp is **required**
+(zero / missing is rejected). Each endorser checks that the value is within a configurable window
+of its local clock (defaults: 10s future / 60s past, `max-timestamp-future` /
+`max-timestamp-past`), then uses it as-is for EVM `block.timestamp` so multi-org RWsets stay
+deterministic. This is **per request / per transaction**, not a single per-block clock:
+endorsement is pre-order and is not re-executed at commit. JSON-RPC `eth_getBlockByNumber`
+timestamps (ledger/API block time) remain a separate path (today set at block parse in fabric-x-sdk)
+and may not match the endorsement-time value contracts saw.
+
+**Multi-endorser clock skew**: under N-of-N endorsement policies every endorser must accept the
+gateway timestamp. If one peer's clock is outside the configured window, that peer returns a
+rejected outcome and the whole endorsement can fail even when other peers accept the same stamp.
+Tune `max-timestamp-past` (and carefully `max-timestamp-future`) to cover expected host clock
+drift plus network delay. Prefer NTP-synced hosts; do not widen future skew aggressively (it
+affects time-gated unlock checks).
+
+**Transaction execution (`NUMBER`)**: the EVM `NUMBER` is still `0` (the block context number is
+never set for execute), even though state is read from the latest committed block. So
+`block.number` inside an executed transaction always reads `0` until a separate fix lands.
 
 **`eth_call` with a block number**: the state DB is correctly snapshotted at the requested height,
-and the EVM `NUMBER` opcode is set to that block-number argument (`0` for `latest`). `TIMESTAMP`,
-however, is always `1_000_000` regardless of the requested block. Contracts that read
-`block.timestamp` inside a view function therefore see a fixed, non-historical value (and
-`block.number` reads `0` for the common `latest` call).
+and the EVM `NUMBER` opcode is set to that block-number argument (`0` for `latest`). `TIMESTAMP` on
+the call path is the endorser's wall-clock Unix second, so view functions that check role grant
+schedules / delays see a time close to recent `Execute` stamps. Historical block timestamps are
+not reconstructed.
+
+**Hardhat time RPCs**: `evm_increaseTime`, `evm_setNextBlockTimestamp`, and `evm_mine` are not
+implemented (no-ops today). OZ tests that advance chain time via those helpers still fail for that
+reason; gateway wall-clock timestamps alone do not replace them.
 
 ---
 

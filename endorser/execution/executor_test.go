@@ -31,7 +31,7 @@ func TestNewExecutor_WrapsStateDBWhenDebugEnabled(t *testing.T) {
 	}
 	eng := NewEVMEngine(Namespace, kvs, cfg, false)
 
-	ex, err := eng.newExecutor(nil)
+	ex, err := eng.newExecutor(nil, uint64(1_700_000_000))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestExecute_MaxTxGas(t *testing.T) {
 			MaxTxGas:    maxTxGas,
 		}
 		eng := NewEVMEngine(Namespace, kvs, cfg, false)
-		ex, err := eng.newExecutor(nil)
+		ex, err := eng.newExecutor(nil, uint64(1_700_000_000))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -109,7 +109,7 @@ func TestNewExecutor_BareStateDBWhenDebugDisabled(t *testing.T) {
 	}
 	eng := NewEVMEngine(Namespace, kvs, cfg, false)
 
-	ex, err := eng.newExecutor(nil)
+	ex, err := eng.newExecutor(nil, uint64(1_700_000_000))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +216,7 @@ func TestNewExecutor_NegativeBlockNumberResolvesToLatest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ex, err := eng.newExecutor(big.NewInt(-5))
+	ex, err := eng.newExecutor(big.NewInt(-5), uint64(1_700_000_000))
 	if err != nil {
 		t.Fatal(err)
 	}

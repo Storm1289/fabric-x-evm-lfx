@@ -36,6 +36,10 @@ message ExecuteRequest {
 
     // Invocation built by the sender, which the endorser passes to the builder.
     Invocation invocation = 3;
+
+    // Unix seconds for EVM block.timestamp. Set once by the gateway at request
+    // construction so all endorsers share the same value.
+    int64 timestamp = 4;
 }
 
 // Invocation carries the parts of the sender's invocation that the endorsement

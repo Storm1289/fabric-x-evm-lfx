@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"time"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -72,8 +73,11 @@ func NewEVMEngine(namespace string, kvs KVSSnapshotter, evmConfig EVMConfig, mon
 // State is always read from the latest block: endorsement must simulate against current state
 // so that the resulting read-write set passes MVCC validation at commit time.
 // Reverts produce a valid endorsement (Status 201 + revert event) instead of an error.
-func (e *EVMEngine) Execute(ctx context.Context, tx *types.Transaction) (endorsement.ExecutionResult, error) {
-	ex, err := e.newExecutor(nil)
+//
+// blockTime is the gateway-supplied Unix second for EVM block.timestamp. It is required
+// (non-zero); the gateway always stamps one value per ExecuteTransaction.
+func (e *EVMEngine) Execute(ctx context.Context, tx *types.Transaction, blockTime uint64) (endorsement.ExecutionResult, error) {
+	ex, err := e.newExecutor(nil, blockTime)
 	if err != nil {
 		return endorsement.ExecutionResult{}, err
 	}
@@ -112,8 +116,13 @@ func (e *EVMEngine) Execute(ctx context.Context, tx *types.Transaction) (endorse
 // Call executes a read-only call (eth_call semantics) against the state at blockNumber
 // (0 / nil = latest). The EVM block context is not reconstructed for historical blocks —
 // with all forks enabled from block 0 this is harmless.
+//
+// TIMESTAMP uses the endorser's wall clock (Unix seconds) so view functions see a time
+// consistent with gateway-stamped Execute. Historical block times are not reconstructed;
+// every call gets "now".
 func (e *EVMEngine) Call(msg ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
-	ex, err := e.newExecutor(blockNumber)
+	blockTime := uint64(time.Now().Unix())
+	ex, err := e.newExecutor(blockNumber, blockTime)
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +191,8 @@ func stateDBBlockNum(ref *uint64) uint64 {
 
 // newExecutor creates a fresh executor with an isolated StateDB.
 // blockNumber selects the Fabric block height for the state snapshot (nil = latest).
-func (e *EVMEngine) newExecutor(blockNumber *big.Int) (*Executor, error) {
+// blockTime is the Unix second used for EVM block.timestamp (required, non-zero).
+func (e *EVMEngine) newExecutor(blockNumber *big.Int, blockTime uint64) (*Executor, error) {
 	ref := resolveStateBlockRef(blockNumber)
 
 	// Begin a new reader to get snapshot isolation
@@ -202,7 +212,7 @@ func (e *EVMEngine) newExecutor(blockNumber *big.Int) (*Executor, error) {
 		state = NewStateDBLogger(stateDB)
 	}
 
-	ex, err := NewExecutor(state, reader, blockNumber, e.evmConfig)
+	ex, err := NewExecutor(state, reader, blockNumber, blockTime, e.evmConfig)
 	if err != nil {
 		reader.Close()
 		return nil, err
@@ -241,18 +251,22 @@ type Executor struct {
 }
 
 // NewExecutor creates an Executor with the provided StateDB and reader.
-// blockNumber sets the EVM block context (nil = 0). evmConfig.ChainConfig must be set.
+// blockNumber sets the EVM block number context (nil = 0).
+// blockTime is the Unix second for block.timestamp and must be non-zero.
+// evmConfig.ChainConfig must be set.
 // The caller is responsible for closing the reader when done with the Executor.
 // The stateDB parameter accepts ExtendedStateDB interface to allow DualStateDB for testing.
-func NewExecutor(stateDB ExtendedStateDB, reader ReadStore, blockNumber *big.Int, evmConfig EVMConfig) (*Executor, error) {
+func NewExecutor(stateDB ExtendedStateDB, reader ReadStore, blockNumber *big.Int, blockTime uint64, evmConfig EVMConfig) (*Executor, error) {
 	if evmConfig.ChainConfig == nil {
 		return nil, fmt.Errorf("evmConfig.ChainConfig must be set")
+	}
+	if blockTime == 0 {
+		return nil, fmt.Errorf("blockTime is required")
 	}
 
 	if blockNumber == nil {
 		blockNumber = new(big.Int)
 	}
-	const defaultBlockTime = uint64(1_000_000)
 	const defaultGasLimit = uint64(300_000_000)
 
 	blockCtx := vm.BlockContext{
@@ -261,7 +275,7 @@ func NewExecutor(stateDB ExtendedStateDB, reader ReadStore, blockNumber *big.Int
 		GetHash:     func(uint64) common.Hash { return common.Hash{} },
 		Coinbase:    common.HexToAddress("0x0"),
 		BlockNumber: blockNumber,
-		Time:        defaultBlockTime,
+		Time:        blockTime,
 		Difficulty:  big.NewInt(0),  // disabled post-merge
 		Random:      &common.Hash{}, // Warning: PREVRANDAO stub must not be relied on by smart contracts.
 		GasLimit:    defaultGasLimit,
@@ -270,7 +284,7 @@ func NewExecutor(stateDB ExtendedStateDB, reader ReadStore, blockNumber *big.Int
 
 	// Cancun requires a non-nil BlobBaseFee; state_transition.go dereferences it directly
 	// for blob transactions.
-	if evmConfig.ChainConfig.IsCancun(blockNumber, defaultBlockTime) {
+	if evmConfig.ChainConfig.IsCancun(blockNumber, blockTime) {
 		excess := uint64(0)
 		blockCtx.BlobBaseFee = eip4844.CalcBlobFee(evmConfig.ChainConfig, &types.Header{ExcessBlobGas: &excess})
 	}
