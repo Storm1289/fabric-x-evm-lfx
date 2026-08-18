@@ -14,40 +14,47 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	ethcore "github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/hyperledger/fabric-x-evm/gateway/domain"
 )
 
-// Guardrails on parked (future-nonce) transactions, kept per sender so one
-// account with a nonce gap cannot exhaust memory.
+// Per-sender guardrails so one account with a nonce gap cannot exhaust memory.
 const (
 	defaultMaxParkedPerSender = 64
 	defaultParkedTTL          = 3 * time.Minute
 )
 
-// errTooManyParked is returned when a sender exceeds its parked-transaction cap.
 var errTooManyParked = errors.New("too many queued (future-nonce) transactions for sender")
 
-// nonceGate holds transactions whose nonce is ahead of the sender's committed
-// nonce and admits them to the worker queue in nonce order as earlier nonces
-// commit. It keeps a single transaction per sender in flight (issue #52);
-// cross-sender dependency scheduling is handled separately (issue #59).
+// enqueuer receives a transaction that is ready for processing.
+type enqueuer interface {
+	Enqueue(tx *types.Transaction)
+}
+
+// nonceGate sequences a sender's transactions: it enqueues the next expected
+// nonce, parks higher nonces until the gap fills, and rejects lower ones. Each
+// sender's next nonce is cached in memory - seeded from state and advanced as
+// blocks commit - so in-order admits do no state reads; a tx ahead of the cache
+// re-reads once in case the cache lagged the ledger.
 type nonceGate struct {
-	mu     sync.Mutex
+	mu     sync.RWMutex
 	state  stateReader
 	signer types.Signer
-	admit  func(*types.Transaction) // hands an in-order tx to the worker queue
+	queue  enqueuer
 
-	senders map[common.Address]*senderParking
+	senders map[common.Address]*senderState
 
 	maxPerSender int
 	ttl          time.Duration
 	now          func() time.Time
 }
 
-// senderParking holds one sender's future-nonce transactions, keyed by nonce.
-type senderParking struct {
-	parked map[uint64]parkedTx
+// senderState is one sender's next expected nonce and its parked transactions.
+type senderState struct {
+	next     uint64 // next nonce eligible to admit (the ledger's committed nonce)
+	parked   map[uint64]parkedTx
+	lastSeen time.Time
 }
 
 type parkedTx struct {
@@ -55,118 +62,123 @@ type parkedTx struct {
 	parkedAt time.Time
 }
 
-// newNonceGate builds a gate that reads committed nonces from state and admits
-// ready transactions via admit.
-func newNonceGate(state stateReader, signer types.Signer, admit func(*types.Transaction)) *nonceGate {
+func newNonceGate(state stateReader, signer types.Signer, queue enqueuer) *nonceGate {
 	return &nonceGate{
 		state:        state,
 		signer:       signer,
-		admit:        admit,
-		senders:      make(map[common.Address]*senderParking),
+		queue:        queue,
+		senders:      make(map[common.Address]*senderState),
 		maxPerSender: defaultMaxParkedPerSender,
 		ttl:          defaultParkedTTL,
 		now:          time.Now,
 	}
 }
 
-// Admit enqueues tx for processing when its nonce is the sender's next expected
-// nonce, or parks it until the preceding nonces commit. Callers run ValidateTx
-// (which rejects nonce-too-low) before Admit, so a non-future nonce is ready.
+// Admit enqueues tx if it is the sender's next nonce, parks it if it is ahead,
+// or rejects it as too low. It owns the nonce check; ValidateTx no longer does it.
 func (g *nonceGate) Admit(ctx context.Context, tx *types.Transaction) error {
 	from, err := types.Sender(g.signer, tx)
 	if err != nil {
 		return fmt.Errorf("recover sender: %w", err)
 	}
 
-	committed, err := g.state.NonceAt(ctx, from, nil)
-	if err != nil {
-		return fmt.Errorf("look up nonce: %w", err)
-	}
-
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	// In order (or, defensively, stale): hand straight to the worker queue.
-	if tx.Nonce() <= committed {
-		g.admit(tx)
+	ss := g.senders[from]
+	seeded := false
+	if ss == nil {
+		// First transaction from this sender: seed the next nonce from state.
+		seed, err := g.state.NonceAt(ctx, from, nil)
+		if err != nil {
+			return fmt.Errorf("look up nonce: %w", err)
+		}
+		ss = &senderState{next: seed, parked: make(map[uint64]parkedTx)}
+		g.senders[from] = ss
+		seeded = true
+	}
+	ss.lastSeen = g.now()
+
+	// A tx ahead of a cached next may just mean the cache lagged the ledger (a
+	// restart, a missed commit). Re-read once before treating it as a gap.
+	if !seeded && tx.Nonce() > ss.next {
+		committed, err := g.state.NonceAt(ctx, from, nil)
+		if err != nil {
+			return fmt.Errorf("look up nonce: %w", err)
+		}
+		if committed > ss.next {
+			ss.next = committed
+		}
+	}
+
+	switch {
+	case tx.Nonce() < ss.next:
+		return fmt.Errorf("%w: next nonce %d, tx nonce %d", ethcore.ErrNonceTooLow, ss.next, tx.Nonce())
+	case tx.Nonce() == ss.next:
+		g.queue.Enqueue(tx)
 		return nil
 	}
 
 	// Future nonce: park until the gap fills.
-	sp := g.senders[from]
-	if sp == nil {
-		sp = &senderParking{parked: make(map[uint64]parkedTx)}
-		g.senders[from] = sp
-	}
-	sp.evictExpired(g.now(), g.ttl)
-
-	if _, replacing := sp.parked[tx.Nonce()]; !replacing && len(sp.parked) >= g.maxPerSender {
+	ss.evictExpired(g.now(), g.ttl)
+	if _, replacing := ss.parked[tx.Nonce()]; !replacing && len(ss.parked) >= g.maxPerSender {
 		return errTooManyParked
 	}
-	sp.parked[tx.Nonce()] = parkedTx{tx: tx, parkedAt: g.now()}
+	ss.parked[tx.Nonce()] = parkedTx{tx: tx, parkedAt: g.now()}
 	return nil
 }
 
-// Released is registered with the block-commit path. For each sender that both
-// appears in the committed block and has parked transactions, it re-reads the
-// committed nonce and admits the next in-order transaction if it is parked.
-func (g *nonceGate) Released(ctx context.Context, committed []domain.Transaction) {
-	g.mu.Lock()
-	affected := make(map[common.Address]struct{})
+// Observe advances each committed sender's next nonce from the block and admits
+// the now-ready parked transaction, if any. It does no state reads.
+func (g *nonceGate) Observe(committed []domain.Transaction) {
+	// Highest committed nonce per sender.
+	highest := make(map[common.Address]uint64)
+	seen := make(map[common.Address]bool)
 	for i := range committed {
-		from := common.BytesToAddress(committed[i].FromAddress)
-		if _, tracked := g.senders[from]; tracked {
-			affected[from] = struct{}{}
-		}
-	}
-	g.mu.Unlock()
-
-	// Read state outside the lock; it reflects the block just persisted.
-	for from := range affected {
-		nonce, err := g.state.NonceAt(ctx, from, nil)
-		if err != nil {
-			logger.Errorf("nonce gate: look up nonce for %s: %v", from.Hex(), err)
+		tx := committed[i].ToEthTx()
+		if tx == nil {
 			continue
 		}
-		g.releaseSender(from, nonce)
+		from := common.BytesToAddress(committed[i].FromAddress)
+		if n := tx.Nonce(); !seen[from] || n > highest[from] {
+			highest[from] = n
+			seen[from] = true
+		}
 	}
-}
 
-// releaseSender drops parked transactions below committed and admits the one at
-// the committed nonce, if present.
-func (g *nonceGate) releaseSender(from common.Address, committed uint64) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	sp := g.senders[from]
-	if sp == nil {
-		return
-	}
-	sp.evictExpired(g.now(), g.ttl)
-
-	for nonce := range sp.parked {
-		if nonce < committed {
-			delete(sp.parked, nonce)
+	now := g.now()
+	for from, n := range highest {
+		ss := g.senders[from]
+		if ss == nil {
+			continue
+		}
+		if n+1 > ss.next {
+			ss.next = n + 1
+		}
+		ss.lastSeen = now
+		for nonce := range ss.parked {
+			if nonce < ss.next {
+				delete(ss.parked, nonce)
+			}
+		}
+		if p, ok := ss.parked[ss.next]; ok {
+			delete(ss.parked, ss.next)
+			g.queue.Enqueue(p.tx)
 		}
 	}
-
-	if p, ok := sp.parked[committed]; ok {
-		delete(sp.parked, committed)
-		g.admit(p.tx)
-	}
-
-	if len(sp.parked) == 0 {
-		delete(g.senders, from)
-	}
+	g.evictIdle(now)
 }
 
 // IsPending returns a parked transaction by hash, or nil if it is not parked.
 func (g *nonceGate) IsPending(hash common.Hash) *types.Transaction {
-	g.mu.Lock()
-	defer g.mu.Unlock()
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 
-	for _, sp := range g.senders {
-		for _, p := range sp.parked {
+	for _, ss := range g.senders {
+		for _, p := range ss.parked {
 			if p.tx.Hash() == hash {
 				return p.tx
 			}
@@ -175,11 +187,21 @@ func (g *nonceGate) IsPending(hash common.Hash) *types.Transaction {
 	return nil
 }
 
+// evictIdle drops cached senders with no parked txs that have been idle past the
+// TTL, bounding the map for one-shot senders.
+func (g *nonceGate) evictIdle(now time.Time) {
+	for from, ss := range g.senders {
+		if len(ss.parked) == 0 && now.Sub(ss.lastSeen) > g.ttl {
+			delete(g.senders, from)
+		}
+	}
+}
+
 // evictExpired drops parked transactions whose gap never filled within the TTL.
-func (sp *senderParking) evictExpired(now time.Time, ttl time.Duration) {
-	for nonce, p := range sp.parked {
+func (ss *senderState) evictExpired(now time.Time, ttl time.Duration) {
+	for nonce, p := range ss.parked {
 		if now.Sub(p.parkedAt) > ttl {
-			delete(sp.parked, nonce)
+			delete(ss.parked, nonce)
 		}
 	}
 }

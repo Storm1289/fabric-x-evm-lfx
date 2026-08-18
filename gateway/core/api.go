@@ -130,8 +130,8 @@ func New(ec *EndorsementClient, batchSubmitter *BatchSubmitter, store Store, cha
 		endorsementChan: endorsementChan,
 	}
 	// Park future-nonce transactions and release them in nonce order as earlier
-	// nonces commit (issue #52).
-	g.nonceGate = newNonceGate(g, g.Signer, g.TxQueue.Enqueue)
+	// nonces commit.
+	g.nonceGate = newNonceGate(g, g.Signer, g.TxQueue)
 	return g, nil
 }
 
@@ -179,7 +179,7 @@ func (g *Gateway) processTx(ctx context.Context, tx *types.Transaction) error {
 // SendTransaction runs geth-style pre-flight validation, then enqueues the tx
 // for async endorse/submit. Mirrors eth_sendRawTransaction's failure model.
 func (g *Gateway) SendTransaction(ctx context.Context, tx *types.Transaction) error {
-	if err := ValidateTx(ctx, tx, g.ChainConfig, g.Signer, g); err != nil {
+	if err := ValidateTx(tx, g.ChainConfig, g.Signer); err != nil {
 		return err
 	}
 	// Reject a resubmission already in the queue or parked awaiting an earlier nonce.
@@ -408,10 +408,7 @@ func (g *Gateway) Stop() error {
 func (g *Gateway) Handle(ctx context.Context, b blocks.Block) error {
 	// Convert blocks.Block to domain.Block using the shared conversion function
 	domainBlock := ConvertToDomain(b)
-	if err := g.TxQueue.Handle(ctx, &domainBlock); err != nil {
-		return err
-	}
-	// Release parked transactions whose earlier nonces just committed.
-	g.nonceGate.Released(ctx, domainBlock.Transactions)
-	return nil
+	// Release parked work first, then let the queue feed workers.
+	g.nonceGate.Observe(domainBlock.Transactions)
+	return g.TxQueue.Handle(ctx, &domainBlock)
 }

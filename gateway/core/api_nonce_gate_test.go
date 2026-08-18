@@ -43,7 +43,7 @@ func gatewayWithGate(t *testing.T) *Gateway {
 		TxQueue:     NewTxQueue(),
 		endorsers:   newClient(nonceStub()),
 	}
-	g.nonceGate = newNonceGate(g, g.Signer, g.TxQueue.Enqueue)
+	g.nonceGate = newNonceGate(g, g.Signer, g.TxQueue)
 	return g
 }
 
@@ -79,7 +79,7 @@ func TestHandle_QueueErrorPropagates(t *testing.T) {
 		TxQueue:     &errHandleQueue{TxQueue: NewTxQueue(), err: boom},
 		endorsers:   newClient(nonceStub()),
 	}
-	g.nonceGate = newNonceGate(g, g.Signer, g.TxQueue.Enqueue)
+	g.nonceGate = newNonceGate(g, g.Signer, g.TxQueue)
 
 	require.ErrorIs(t, g.Handle(context.Background(), blocks.Block{}), boom)
 }
