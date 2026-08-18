@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"math/big"
+	"time"
 
 	"github.com/ethereum/go-ethereum"
 	ethcommon "github.com/ethereum/go-ethereum/common"
@@ -30,7 +31,13 @@ func (s *Server) Execute(ctx context.Context, req *endorsementpb.ExecuteRequest)
 	if err := tx.UnmarshalBinary(req.GetEthereumTx()); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "unmarshal tx: %v", err)
 	}
-	resp, err := s.svc.Execute(ctx, invocation(req), tx)
+	// Proto3 default 0 means "unset"; map to time.Time{} so the endorser
+	// returns a clear "timestamp is required" application error.
+	var ts time.Time
+	if sec := req.GetTimestamp(); sec != 0 {
+		ts = time.Unix(sec, 0).UTC()
+	}
+	resp, err := s.svc.Execute(ctx, invocation(req), tx, ts)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "execute: %v", err)
 	}

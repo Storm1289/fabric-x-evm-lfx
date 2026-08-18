@@ -9,8 +9,19 @@ package config
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/hyperledger/fabric-x-evm/common"
+)
+
+// Defaults for gateway-supplied EVM block.timestamp validation.
+const (
+	// DefaultTimestampFutureSkew is the max allowed request time ahead of the
+	// endorser's clock (tight: limits early unlock / SWC-116 exposure).
+	DefaultTimestampFutureSkew = 10 * time.Second
+	// DefaultTimestampPastSkew is the max allowed request time behind the
+	// endorser's clock (looser: hygiene only; replay is covered by nonce/TxID).
+	DefaultTimestampPastSkew = 60 * time.Second
 )
 
 // Endorser contains configuration for a single embedded endorser peer.
@@ -21,6 +32,28 @@ type Endorser struct {
 	Database  DB                    `mapstructure:"database"  yaml:"database"`
 	// DebugLogs enables per-tx StateDB DEBUG logging via StateDBLogger.
 	DebugLogs bool `mapstructure:"debug-logs" yaml:"debug-logs"`
+	// MaxTimestampFuture is how far ahead of local time a request timestamp may
+	// be. Zero means DefaultTimestampFutureSkew.
+	MaxTimestampFuture time.Duration `mapstructure:"max-timestamp-future" yaml:"max-timestamp-future"`
+	// MaxTimestampPast is how far behind local time a request timestamp may be.
+	// Zero means DefaultTimestampPastSkew.
+	MaxTimestampPast time.Duration `mapstructure:"max-timestamp-past" yaml:"max-timestamp-past"`
+}
+
+// TimestampFutureSkew returns the configured future skew, or the default.
+func (cfg Endorser) TimestampFutureSkew() time.Duration {
+	if cfg.MaxTimestampFuture <= 0 {
+		return DefaultTimestampFutureSkew
+	}
+	return cfg.MaxTimestampFuture
+}
+
+// TimestampPastSkew returns the configured past skew, or the default.
+func (cfg Endorser) TimestampPastSkew() time.Duration {
+	if cfg.MaxTimestampPast <= 0 {
+		return DefaultTimestampPastSkew
+	}
+	return cfg.MaxTimestampPast
 }
 
 // Supported values for DB.Database.

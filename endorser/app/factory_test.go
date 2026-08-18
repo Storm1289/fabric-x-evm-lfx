@@ -30,6 +30,7 @@ func newCore(t *testing.T, protocol string) (any, error) {
 		stubSigner{},
 		execution.EVMConfig{ChainConfig: common.BuildChainConfig(4011)},
 		false,
+		config.Endorser{},
 	)
 	return builder, err
 }

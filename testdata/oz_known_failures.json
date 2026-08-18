@@ -16,32 +16,7 @@
     "cause": "gas-stub"
   },
   {
-    "id": "AccessControlDefaultAdminRules accepts transfer admin schedule not passed should revert if block.timestamp is equal to schedule",
-    "cause": "fixed-timestamp",
-    "note": "block.timestamp is hardcoded (see COMPATIBILITY.md); manifests as timestamp diffs, delay/schedule assertions, or (for ERC20Votes-style checkpoints) an undercount since votes never actually advance in time"
-  },
-  {
-    "id": "AccessControlDefaultAdminRules accepts transfer admin schedule not passed should revert if block.timestamp is less to schedule",
-    "cause": "fixed-timestamp",
-    "note": "block.timestamp is hardcoded (see COMPATIBILITY.md); manifests as timestamp diffs, delay/schedule assertions, or (for ERC20Votes-style checkpoints) an undercount since votes never actually advance in time"
-  },
-  {
     "id": "AccessControlDefaultAdminRules accepts transfer admin when caller is pending default admin and delay has passed accepts a transfer and changes default admin",
-    "cause": "fixed-timestamp",
-    "note": "block.timestamp is hardcoded (see COMPATIBILITY.md); manifests as timestamp diffs, delay/schedule assertions, or (for ERC20Votes-style checkpoints) an undercount since votes never actually advance in time"
-  },
-  {
-    "id": "AccessControlDefaultAdminRules begins a default admin transfer when there is a pending admin transfer should be able to begin a transfer again after acceptSchedule passes",
-    "cause": "fixed-timestamp",
-    "note": "block.timestamp is hardcoded (see COMPATIBILITY.md); manifests as timestamp diffs, delay/schedule assertions, or (for ERC20Votes-style checkpoints) an undercount since votes never actually advance in time"
-  },
-  {
-    "id": "AccessControlDefaultAdminRules begins a default admin transfer when there is a pending admin transfer should be able to begin a transfer again before acceptSchedule passes",
-    "cause": "fixed-timestamp",
-    "note": "block.timestamp is hardcoded (see COMPATIBILITY.md); manifests as timestamp diffs, delay/schedule assertions, or (for ERC20Votes-style checkpoints) an undercount since votes never actually advance in time"
-  },
-  {
-    "id": "AccessControlDefaultAdminRules begins a default admin transfer when there is a pending admin transfer should be able to begin a transfer again exactly when acceptSchedule passes",
     "cause": "fixed-timestamp",
     "note": "block.timestamp is hardcoded (see COMPATIBILITY.md); manifests as timestamp diffs, delay/schedule assertions, or (for ERC20Votes-style checkpoints) an undercount since votes never actually advance in time"
   },
@@ -62,11 +37,6 @@
   },
   {
     "id": "AccessControlDefaultAdminRules begins a default admin transfer when there is a pending delay should set the old delay and apply it to next default admin transfer schedule exactly when effectSchedule passed",
-    "cause": "fixed-timestamp",
-    "note": "block.timestamp is hardcoded (see COMPATIBILITY.md); manifests as timestamp diffs, delay/schedule assertions, or (for ERC20Votes-style checkpoints) an undercount since votes never actually advance in time"
-  },
-  {
-    "id": "AccessControlDefaultAdminRules begins a default admin transfer when there is no pending delay nor pending admin transfer should set pending default admin and schedule",
     "cause": "fixed-timestamp",
     "note": "block.timestamp is hardcoded (see COMPATIBILITY.md); manifests as timestamp diffs, delay/schedule assertions, or (for ERC20Votes-style checkpoints) an undercount since votes never actually advance in time"
   },
@@ -177,21 +147,6 @@
     "note": "block.timestamp is hardcoded (see COMPATIBILITY.md); manifests as timestamp diffs, delay/schedule assertions, or (for ERC20Votes-style checkpoints) an undercount since votes never actually advance in time"
   },
   {
-    "id": "AccessControlDefaultAdminRules renounces admin renouncing the admin role when not an admin doesn't affect the schedule",
-    "cause": "fixed-timestamp",
-    "note": "block.timestamp is hardcoded (see COMPATIBILITY.md); manifests as timestamp diffs, delay/schedule assertions, or (for ERC20Votes-style checkpoints) an undercount since votes never actually advance in time"
-  },
-  {
-    "id": "AccessControlDefaultAdminRules renounces admin schedule not passed reverts if block.timestamp is equal to schedule",
-    "cause": "fixed-timestamp",
-    "note": "block.timestamp is hardcoded (see COMPATIBILITY.md); manifests as timestamp diffs, delay/schedule assertions, or (for ERC20Votes-style checkpoints) an undercount since votes never actually advance in time"
-  },
-  {
-    "id": "AccessControlDefaultAdminRules renounces admin schedule not passed reverts if block.timestamp is less to schedule",
-    "cause": "fixed-timestamp",
-    "note": "block.timestamp is hardcoded (see COMPATIBILITY.md); manifests as timestamp diffs, delay/schedule assertions, or (for ERC20Votes-style checkpoints) an undercount since votes never actually advance in time"
-  },
-  {
     "id": "AccessControlDefaultAdminRules rollbacks a delay change when there is a pending delay should not emit a cancellation event after the delay schedule passes",
     "cause": "fixed-timestamp",
     "note": "block.timestamp is hardcoded (see COMPATIBILITY.md); manifests as timestamp diffs, delay/schedule assertions, or (for ERC20Votes-style checkpoints) an undercount since votes never actually advance in time"
@@ -240,16 +195,15 @@
   },
   {
     "id": "AccessManager #execute restrictions when the manager is open when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation has expired reverts as AccessManagerExpired",
-    "cause": "fixed-timestamp",
-    "note": "block.timestamp is hardcoded (see COMPATIBILITY.md); manifests as timestamp diffs, delay/schedule assertions, or (for ERC20Votes-style checkpoints) an undercount since votes never actually advance in time"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager #execute restrictions when the manager is open when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation is ready for execution succeeds called directly",
-    "cause": "execution reverted"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager #execute restrictions when the manager is open when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation is ready for execution succeeds via execute",
-    "cause": "execution reverted"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager #execute reverts executing twice",
@@ -269,12 +223,6 @@
   {
     "id": "AccessManager #schedule restrictions when the manager is open when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is delayed when caller has an execution delay when grant delay has taken effect succeeds",
     "cause": "execution reverted"
-  },
-  {
-    "id": "AccessManager #schedule reverts if the specified execution date is before the current timestamp + caller execution delay"
-  },
-  {
-    "id": "AccessManager #schedule schedules an operation at the minimum execution date if no specified execution date (when == 0)"
   },
   {
     "id": "AccessManager access managed self operations when calling a restricted target function restrictions when the manager is open when the call comes from the manager (msg.sender == manager) \"before each\" hook: define caller as manager for \"succeeds\"",
@@ -297,16 +245,15 @@
   },
   {
     "id": "AccessManager access managed self operations when calling a restricted target function restrictions when the manager is open when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation has expired reverts as AccessManagerExpired",
-    "cause": "fixed-timestamp",
-    "note": "block.timestamp is hardcoded (see COMPATIBILITY.md); manifests as timestamp diffs, delay/schedule assertions, or (for ERC20Votes-style checkpoints) an undercount since votes never actually advance in time"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager access managed self operations when calling a restricted target function restrictions when the manager is open when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation is ready for execution succeeds called directly",
-    "cause": "execution reverted"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager access managed self operations when calling a restricted target function restrictions when the manager is open when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation is ready for execution succeeds via execute",
-    "cause": "execution reverted"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager access managed target operations when calling a restricted target function restrictions when the manager is open when the call comes from the manager (msg.sender == manager) \"before each\" hook: define caller as manager for \"succeeds\"",
@@ -329,16 +276,15 @@
   },
   {
     "id": "AccessManager access managed target operations when calling a restricted target function restrictions when the manager is open when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation has expired reverts as AccessManagerExpired",
-    "cause": "fixed-timestamp",
-    "note": "block.timestamp is hardcoded (see COMPATIBILITY.md); manifests as timestamp diffs, delay/schedule assertions, or (for ERC20Votes-style checkpoints) an undercount since votes never actually advance in time"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager access managed target operations when calling a restricted target function restrictions when the manager is open when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation is ready for execution succeeds called directly",
-    "cause": "execution reverted"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager access managed target operations when calling a restricted target function restrictions when the manager is open when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation is ready for execution succeeds via execute",
-    "cause": "execution reverted"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager admin operations not subject to a delay #setTargetClosed restrictions when the call comes from the manager (msg.sender == manager) \"before each\" hook: define caller as manager for \"succeeds\"",
@@ -375,16 +321,15 @@
   },
   {
     "id": "AccessManager admin operations not subject to a delay #setTargetClosed restrictions when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation has expired reverts as AccessManagerExpired",
-    "cause": "fixed-timestamp",
-    "note": "block.timestamp is hardcoded (see COMPATIBILITY.md); manifests as timestamp diffs, delay/schedule assertions, or (for ERC20Votes-style checkpoints) an undercount since votes never actually advance in time"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager admin operations not subject to a delay #setTargetClosed restrictions when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation is ready for execution succeeds called directly",
-    "cause": "execution reverted"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager admin operations not subject to a delay #setTargetClosed restrictions when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation is ready for execution succeeds via execute",
-    "cause": "execution reverted"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager admin operations not subject to a delay #setTargetFunctionRole restrictions when the call comes from the manager (msg.sender == manager) \"before each\" hook: define caller as manager for \"succeeds\"",
@@ -421,16 +366,15 @@
   },
   {
     "id": "AccessManager admin operations not subject to a delay #setTargetFunctionRole restrictions when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation has expired reverts as AccessManagerExpired",
-    "cause": "fixed-timestamp",
-    "note": "block.timestamp is hardcoded (see COMPATIBILITY.md); manifests as timestamp diffs, delay/schedule assertions, or (for ERC20Votes-style checkpoints) an undercount since votes never actually advance in time"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager admin operations not subject to a delay #setTargetFunctionRole restrictions when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation is ready for execution succeeds called directly",
-    "cause": "execution reverted"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager admin operations not subject to a delay #setTargetFunctionRole restrictions when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation is ready for execution succeeds via execute",
-    "cause": "execution reverted"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager admin operations not subject to a delay #updateAuthority restrictions when the call comes from the manager (msg.sender == manager) \"before each\" hook: define caller as manager for \"succeeds\"",
@@ -467,16 +411,15 @@
   },
   {
     "id": "AccessManager admin operations not subject to a delay #updateAuthority restrictions when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation has expired reverts as AccessManagerExpired",
-    "cause": "fixed-timestamp",
-    "note": "block.timestamp is hardcoded (see COMPATIBILITY.md); manifests as timestamp diffs, delay/schedule assertions, or (for ERC20Votes-style checkpoints) an undercount since votes never actually advance in time"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager admin operations not subject to a delay #updateAuthority restrictions when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation is ready for execution succeeds called directly",
-    "cause": "execution reverted"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager admin operations not subject to a delay #updateAuthority restrictions when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation is ready for execution succeeds via execute",
-    "cause": "execution reverted"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager admin operations not subject to a delay role admin operations #grantRole restrictions when the call comes from the manager (msg.sender == manager) \"before each\" hook: define caller as manager for \"succeeds\"",
@@ -499,49 +442,31 @@
   },
   {
     "id": "AccessManager admin operations not subject to a delay role admin operations #grantRole restrictions when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation has expired reverts as AccessManagerExpired",
-    "cause": "fixed-timestamp",
-    "note": "block.timestamp is hardcoded (see COMPATIBILITY.md); manifests as timestamp diffs, delay/schedule assertions, or (for ERC20Votes-style checkpoints) an undercount since votes never actually advance in time"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager admin operations not subject to a delay role admin operations #grantRole restrictions when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation is ready for execution succeeds called directly",
-    "cause": "execution reverted"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager admin operations not subject to a delay role admin operations #grantRole restrictions when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation is ready for execution succeeds via execute",
-    "cause": "execution reverted"
+    "cause": "hardhat-time-rpc"
   },
   {
-    "id": "AccessManager admin operations not subject to a delay role admin operations #grantRole when the user is already a role member with grant delay when decreasing the execution delay emits event"
+    "id": "AccessManager admin operations not subject to a delay role admin operations #grantRole when the user is already a role member with grant delay when decreasing the execution delay when execution delay effect delay has taken effect changes the execution delay",
+    "cause": "hardhat-time-rpc"
   },
   {
-    "id": "AccessManager admin operations not subject to a delay role admin operations #grantRole when the user is already a role member with grant delay when decreasing the execution delay when execution delay effect delay has not taken effect yet does not change the execution delay yet"
+    "id": "AccessManager admin operations not subject to a delay role admin operations #grantRole when the user is already a role member without grant delay when decreasing the execution delay when execution delay effect delay has taken effect changes the execution delay",
+    "cause": "hardhat-time-rpc"
   },
   {
-    "id": "AccessManager admin operations not subject to a delay role admin operations #grantRole when the user is already a role member with grant delay when decreasing the execution delay when execution delay effect delay has taken effect changes the execution delay"
+    "id": "AccessManager admin operations not subject to a delay role admin operations #grantRole when the user is not a role member with grant delay when grant delay has not taken effect yet does not grant role to the user yet",
+    "cause": "hardhat-time-rpc"
   },
   {
-    "id": "AccessManager admin operations not subject to a delay role admin operations #grantRole when the user is already a role member with grant delay when increasing the execution delay emits event and immediately changes the execution delay"
-  },
-  {
-    "id": "AccessManager admin operations not subject to a delay role admin operations #grantRole when the user is already a role member without grant delay when decreasing the execution delay emits event"
-  },
-  {
-    "id": "AccessManager admin operations not subject to a delay role admin operations #grantRole when the user is already a role member without grant delay when decreasing the execution delay when execution delay effect delay has not taken effect yet does not change the execution delay yet"
-  },
-  {
-    "id": "AccessManager admin operations not subject to a delay role admin operations #grantRole when the user is already a role member without grant delay when decreasing the execution delay when execution delay effect delay has taken effect changes the execution delay"
-  },
-  {
-    "id": "AccessManager admin operations not subject to a delay role admin operations #grantRole when the user is already a role member without grant delay when increasing the execution delay emits event and immediately changes the execution delay"
-  },
-  {
-    "id": "AccessManager admin operations not subject to a delay role admin operations #grantRole when the user is not a role member with grant delay when grant delay has not taken effect yet does not grant role to the user yet"
-  },
-  {
-    "id": "AccessManager admin operations not subject to a delay role admin operations #grantRole when the user is not a role member with grant delay when grant delay has taken effect grants role to the user"
-  },
-  {
-    "id": "AccessManager admin operations not subject to a delay role admin operations #grantRole when the user is not a role member without grant delay immediately grants the role to the user"
+    "id": "AccessManager admin operations not subject to a delay role admin operations #grantRole when the user is not a role member with grant delay when grant delay has taken effect grants role to the user",
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager admin operations not subject to a delay role admin operations #revokeRole restrictions when the call comes from the manager (msg.sender == manager) \"before each\" hook: define caller as manager for \"succeeds\"",
@@ -564,16 +489,15 @@
   },
   {
     "id": "AccessManager admin operations not subject to a delay role admin operations #revokeRole restrictions when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation has expired reverts as AccessManagerExpired",
-    "cause": "fixed-timestamp",
-    "note": "block.timestamp is hardcoded (see COMPATIBILITY.md); manifests as timestamp diffs, delay/schedule assertions, or (for ERC20Votes-style checkpoints) an undercount since votes never actually advance in time"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager admin operations not subject to a delay role admin operations #revokeRole restrictions when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation is ready for execution succeeds called directly",
-    "cause": "execution reverted"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager admin operations not subject to a delay role admin operations #revokeRole restrictions when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation is ready for execution succeeds via execute",
-    "cause": "execution reverted"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager admin operations not subject to a delay role admin operations #revokeRole when role has been granted when grant delay has taken effect revokes a granted role that already took effect"
@@ -613,16 +537,15 @@
   },
   {
     "id": "AccessManager admin operations subject to a delay #labelRole restrictions when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation has expired reverts as AccessManagerExpired",
-    "cause": "fixed-timestamp",
-    "note": "block.timestamp is hardcoded (see COMPATIBILITY.md); manifests as timestamp diffs, delay/schedule assertions, or (for ERC20Votes-style checkpoints) an undercount since votes never actually advance in time"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager admin operations subject to a delay #labelRole restrictions when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation is ready for execution succeeds called directly",
-    "cause": "execution reverted"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager admin operations subject to a delay #labelRole restrictions when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation is ready for execution succeeds via execute",
-    "cause": "execution reverted"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager admin operations subject to a delay #setGrantDelay restrictions when the call comes from the manager (msg.sender == manager) \"before each\" hook: define caller as manager for \"succeeds\"",
@@ -659,16 +582,15 @@
   },
   {
     "id": "AccessManager admin operations subject to a delay #setGrantDelay restrictions when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation has expired reverts as AccessManagerExpired",
-    "cause": "fixed-timestamp",
-    "note": "block.timestamp is hardcoded (see COMPATIBILITY.md); manifests as timestamp diffs, delay/schedule assertions, or (for ERC20Votes-style checkpoints) an undercount since votes never actually advance in time"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager admin operations subject to a delay #setGrantDelay restrictions when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation is ready for execution succeeds called directly",
-    "cause": "execution reverted"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager admin operations subject to a delay #setGrantDelay restrictions when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation is ready for execution succeeds via execute",
-    "cause": "execution reverted"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager admin operations subject to a delay #setGrantDelay when increasing the delay \"before each\" hook: sets old delay for \"increases the delay after minsetback\""
@@ -711,16 +633,15 @@
   },
   {
     "id": "AccessManager admin operations subject to a delay #setRoleAdmin restrictions when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation has expired reverts as AccessManagerExpired",
-    "cause": "fixed-timestamp",
-    "note": "block.timestamp is hardcoded (see COMPATIBILITY.md); manifests as timestamp diffs, delay/schedule assertions, or (for ERC20Votes-style checkpoints) an undercount since votes never actually advance in time"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager admin operations subject to a delay #setRoleAdmin restrictions when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation is ready for execution succeeds called directly",
-    "cause": "execution reverted"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager admin operations subject to a delay #setRoleAdmin restrictions when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation is ready for execution succeeds via execute",
-    "cause": "execution reverted"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager admin operations subject to a delay #setRoleGuardian restrictions when the call comes from the manager (msg.sender == manager) \"before each\" hook: define caller as manager for \"succeeds\"",
@@ -757,16 +678,15 @@
   },
   {
     "id": "AccessManager admin operations subject to a delay #setRoleGuardian restrictions when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation has expired reverts as AccessManagerExpired",
-    "cause": "fixed-timestamp",
-    "note": "block.timestamp is hardcoded (see COMPATIBILITY.md); manifests as timestamp diffs, delay/schedule assertions, or (for ERC20Votes-style checkpoints) an undercount since votes never actually advance in time"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager admin operations subject to a delay #setRoleGuardian restrictions when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation is ready for execution succeeds called directly",
-    "cause": "execution reverted"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager admin operations subject to a delay #setRoleGuardian restrictions when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation is ready for execution succeeds via execute",
-    "cause": "execution reverted"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager admin operations subject to a delay #setTargetAdminDelay restrictions when the call comes from the manager (msg.sender == manager) \"before each\" hook: define caller as manager for \"succeeds\"",
@@ -803,16 +723,15 @@
   },
   {
     "id": "AccessManager admin operations subject to a delay #setTargetAdminDelay restrictions when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation has expired reverts as AccessManagerExpired",
-    "cause": "fixed-timestamp",
-    "note": "block.timestamp is hardcoded (see COMPATIBILITY.md); manifests as timestamp diffs, delay/schedule assertions, or (for ERC20Votes-style checkpoints) an undercount since votes never actually advance in time"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager admin operations subject to a delay #setTargetAdminDelay restrictions when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation is ready for execution succeeds called directly",
-    "cause": "execution reverted"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager admin operations subject to a delay #setTargetAdminDelay restrictions when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is not delayed when caller has an execution delay when operation is scheduled when operation is ready for execution succeeds via execute",
-    "cause": "execution reverted"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager admin operations subject to a delay #setTargetAdminDelay when increasing the delay \"before each\" hook: sets old delay for \"increases the delay after minsetback\""
@@ -835,34 +754,25 @@
     "id": "AccessManager getters #canCall when the manager is open when the call does not come from the manager (msg.sender != manager) when the function requires the caller to be granted with a role other than PUBLIC_ROLE when the required role is granted to the caller when role granting is delayed when caller has no execution delay when grant delay has taken effect should return true and no execution delay"
   },
   {
-    "id": "AccessManager getters #getAccess when the required role is granted to the caller when role granting is delayed when caller has an execution delay when grant delay has not taken effect yet role is not in effect and execution delay is set"
-  },
-  {
     "id": "AccessManager getters #getAccess when the required role is granted to the caller when role granting is delayed when caller has an execution delay when grant delay has taken effect access has role in effect and execution delay is set"
-  },
-  {
-    "id": "AccessManager getters #getAccess when the required role is granted to the caller when role granting is delayed when caller has no execution delay when grant delay has not taken effect yet access has role not in effect without execution delay"
   },
   {
     "id": "AccessManager getters #getAccess when the required role is granted to the caller when role granting is delayed when caller has no execution delay when grant delay has taken effect role is in effect without execution delay"
   },
   {
-    "id": "AccessManager getters #getAccess when the required role is granted to the caller when role granting is not delayed when caller has an execution delay access has role in effect and execution delay is set"
-  },
-  {
-    "id": "AccessManager getters #getAccess when the required role is granted to the caller when role granting is not delayed when caller has no execution delay access has role in effect without execution delay"
-  },
-  {
     "id": "AccessManager getters #getRoleGrantDelay when the grant admin delay is setup when grant delay has taken effect returns the new role grant delay"
   },
   {
-    "id": "AccessManager getters #getSchedule when operation is scheduled when operation has expired returns 0"
+    "id": "AccessManager getters #getSchedule when operation is scheduled when operation has expired returns 0",
+    "cause": "hardhat-time-rpc"
   },
   {
-    "id": "AccessManager getters #getSchedule when operation is scheduled when operation is not ready for execution returns schedule in the future"
+    "id": "AccessManager getters #getSchedule when operation is scheduled when operation is not ready for execution returns schedule in the future",
+    "cause": "hardhat-time-rpc"
   },
   {
-    "id": "AccessManager getters #getSchedule when operation is scheduled when operation is ready for execution returns schedule"
+    "id": "AccessManager getters #getSchedule when operation is scheduled when operation is ready for execution returns schedule",
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "AccessManager getters #getTargetAdminDelay when the target admin delay is setup when effect delay has taken effect returns the new target admin delay"
@@ -1030,10 +940,6 @@
     "cause": "hardhat_setBalance"
   },
   {
-    "id": "ERC20Permit permit rejects expired permit",
-    "cause": "eth_signTypedData_v4"
-  },
-  {
     "id": "ERC20TransferAuthorization with blockNumber cancelAuthorization cancels the next nonce after consuming the previous one"
   },
   {
@@ -1077,12 +983,6 @@
   },
   {
     "id": "ERC20TransferAuthorization with blockNumber transferWithAuthorization works with different keys in parallel"
-  },
-  {
-    "id": "ERC20TransferAuthorization with timestamp receiveWithAuthorization rejects expired authorization"
-  },
-  {
-    "id": "ERC20TransferAuthorization with timestamp transferWithAuthorization rejects expired authorization"
   },
   {
     "id": "ERC20Votes vote with blockNumber Compound test suite getPastVotes generally returns the voting balance at the appropriate checkpoint",
@@ -1170,10 +1070,6 @@
     "cause": "eth_signTypedData_v4"
   },
   {
-    "id": "ERC20Votes vote with blockNumber run votes workflow delegation with signature with signature rejects expired permit",
-    "cause": "eth_signTypedData_v4"
-  },
-  {
     "id": "ERC20Votes vote with blockNumber run votes workflow getPastTotalSupply returns 0 if there are no checkpoints",
     "cause": "fixed-block-number",
     "note": "block.number is hardcoded at 0 (see COMPATIBILITY.md); manifests as block-number diffs or checkpoint-count mismatches, since checkpoints never actually advance"
@@ -1189,10 +1085,6 @@
   },
   {
     "id": "ERC20Votes vote with blockNumber set delegation with signature accept signed delegation",
-    "cause": "eth_signTypedData_v4"
-  },
-  {
-    "id": "ERC20Votes vote with blockNumber set delegation with signature rejects expired permit",
     "cause": "eth_signTypedData_v4"
   },
   {
@@ -1221,11 +1113,6 @@
     "note": "block.timestamp is hardcoded (see COMPATIBILITY.md); manifests as timestamp diffs, delay/schedule assertions, or (for ERC20Votes-style checkpoints) an undercount since votes never actually advance in time"
   },
   {
-    "id": "ERC20Votes vote with timestamp ERC-6372 behavior in timestamp mode should have a correct clock value",
-    "cause": "fixed-timestamp",
-    "note": "block.timestamp is hardcoded (see COMPATIBILITY.md); manifests as timestamp diffs, delay/schedule assertions, or (for ERC20Votes-style checkpoints) an undercount since votes never actually advance in time"
-  },
-  {
     "id": "ERC20Votes vote with timestamp change delegation call",
     "cause": "fixed-timestamp",
     "note": "block.timestamp is hardcoded (see COMPATIBILITY.md); manifests as timestamp diffs, delay/schedule assertions, or (for ERC20Votes-style checkpoints) an undercount since votes never actually advance in time"
@@ -1249,11 +1136,7 @@
   },
   {
     "id": "ERC20Votes vote with timestamp run votes workflow Compound test suite getPastVotes returns the latest block if >= last checkpoint block",
-    "cause": "execution reverted"
-  },
-  {
-    "id": "ERC20Votes vote with timestamp run votes workflow Compound test suite getPastVotes returns zero if < first checkpoint block",
-    "cause": "execution reverted"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "ERC20Votes vote with timestamp run votes workflow delegation with signature delegation update",
@@ -1270,10 +1153,6 @@
     "cause": "eth_signTypedData_v4"
   },
   {
-    "id": "ERC20Votes vote with timestamp run votes workflow delegation with signature with signature rejects expired permit",
-    "cause": "eth_signTypedData_v4"
-  },
-  {
     "id": "ERC20Votes vote with timestamp run votes workflow getPastTotalSupply returns the correct checkpointed total supply",
     "cause": "execution reverted"
   },
@@ -1284,10 +1163,6 @@
   },
   {
     "id": "ERC20Votes vote with timestamp set delegation with signature accept signed delegation",
-    "cause": "eth_signTypedData_v4"
-  },
-  {
-    "id": "ERC20Votes vote with timestamp set delegation with signature rejects expired permit",
     "cause": "eth_signTypedData_v4"
   },
   {
@@ -1307,28 +1182,11 @@
     "cause": "eth_signTypedData_v4"
   },
   {
-    "id": "ERC2771Forwarder execute with tampered request reverts with valid signature for expired deadline",
-    "cause": "eth_signTypedData_v4"
-  },
-  {
     "id": "ERC2771Forwarder executeBatch with tampered requests bubbles out of gas"
   },
   {
     "id": "ERC2771Forwarder executeBatch with tampered requests bubbles out of gas forced by the relayer",
     "cause": "insufficient-funds"
-  },
-  {
-    "id": "ERC2771Forwarder executeBatch with tampered requests when the refund receiver is a known address \"after each\" hook for \"ignores a request with a valid signature for expired deadline\""
-  },
-  {
-    "id": "ERC2771Forwarder executeBatch with tampered requests when the refund receiver is a known address ignores a request with a valid signature for expired deadline"
-  },
-  {
-    "id": "ERC2771Forwarder executeBatch with tampered requests when the refund receiver is the zero address reverts with at least one valid signature for expired deadline"
-  },
-  {
-    "id": "ERC2771Forwarder verify with tampered values returns false with valid signature for expired deadline",
-    "cause": "eth_signTypedData_v4"
   },
   {
     "id": "ERC3009 using blockNumber clock authorizationState returns true after the nonce is consumed"
@@ -1355,14 +1213,7 @@
     "id": "ERC3009 using timestamp clock transferWithAuthorization rejects at the validBefore boundary (current == validBefore)"
   },
   {
-    "id": "ERC3009 using timestamp clock transferWithAuthorization rejects expired authorization"
-  },
-  {
     "id": "ERC6372Utils blockNumber clock mode from uint48",
-    "cause": "execution reverted"
-  },
-  {
-    "id": "ERC6372Utils timestamp clock mode from uint48",
     "cause": "execution reverted"
   },
   {
@@ -1459,10 +1310,6 @@
   },
   {
     "id": "ERC721Votes vote with blockNumber run votes workflow delegation with signature with signature accept signed delegation",
-    "cause": "eth_signTypedData_v4"
-  },
-  {
-    "id": "ERC721Votes vote with blockNumber run votes workflow delegation with signature with signature rejects expired permit",
     "cause": "eth_signTypedData_v4"
   },
   {
@@ -1762,9 +1609,6 @@
     "id": "Governor using $ERC20VotesLegacyMock vote with signature votes with an EOA signature on two proposals"
   },
   {
-    "id": "Governor using $ERC20VotesTimestampMock ERC-6372 behavior in timestamp mode should have a correct clock value"
-  },
-  {
     "id": "Governor using $ERC20VotesTimestampMock ERC165 when the interfaceId is not supported uses less than 30k"
   },
   {
@@ -1790,30 +1634,6 @@
   },
   {
     "id": "Governor using $ERC20VotesTimestampMock cancel public after vote started"
-  },
-  {
-    "id": "Governor using $ERC20VotesTimestampMock frontrun protection using description suffix with protection via proposer suffix proposer can propose"
-  },
-  {
-    "id": "Governor using $ERC20VotesTimestampMock frontrun protection using description suffix with protection via proposer suffix someone else can propose"
-  },
-  {
-    "id": "Governor using $ERC20VotesTimestampMock frontrun protection using description suffix without protection with different suffix proposer can propose"
-  },
-  {
-    "id": "Governor using $ERC20VotesTimestampMock frontrun protection using description suffix without protection with different suffix someone else can propose"
-  },
-  {
-    "id": "Governor using $ERC20VotesTimestampMock frontrun protection using description suffix without protection with proposer suffix but bad address part proposer can propose"
-  },
-  {
-    "id": "Governor using $ERC20VotesTimestampMock frontrun protection using description suffix without protection with proposer suffix but bad address part someone else can propose"
-  },
-  {
-    "id": "Governor using $ERC20VotesTimestampMock frontrun protection using description suffix without protection without suffix proposer can propose"
-  },
-  {
-    "id": "Governor using $ERC20VotesTimestampMock frontrun protection using description suffix without protection without suffix someone else can propose"
   },
   {
     "id": "Governor using $ERC20VotesTimestampMock nominal workflow"
@@ -1968,10 +1788,12 @@
     "flaky": true
   },
   {
-    "id": "GovernorCountingOverridable using $ERC20VotesExtendedTimestampMock cast override vote \"before each\" hook for \"override after delegate vote\""
+    "id": "GovernorCountingOverridable using $ERC20VotesExtendedTimestampMock cast override vote \"before each\" hook for \"override after delegate vote\"",
+    "cause": "hardhat-time-rpc"
   },
   {
-    "id": "GovernorCountingOverridable using $ERC20VotesExtendedTimestampMock nominal is unaffected"
+    "id": "GovernorCountingOverridable using $ERC20VotesExtendedTimestampMock nominal is unaffected",
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "GovernorCrosschain \"before each\" hook for \"execute with executor\"",
@@ -2235,13 +2057,16 @@
     "id": "GovernorTimelockControl using $ERC20VotesTimestampMock nominal"
   },
   {
-    "id": "GovernorTimelockControl using $ERC20VotesTimestampMock onlyGovernance relay can be executed through governance"
+    "id": "GovernorTimelockControl using $ERC20VotesTimestampMock onlyGovernance relay can be executed through governance",
+    "cause": "hardhat-time-rpc"
   },
   {
-    "id": "GovernorTimelockControl using $ERC20VotesTimestampMock onlyGovernance relay is payable and can transfer eth to EOA"
+    "id": "GovernorTimelockControl using $ERC20VotesTimestampMock onlyGovernance relay is payable and can transfer eth to EOA",
+    "cause": "hardhat-time-rpc"
   },
   {
-    "id": "GovernorTimelockControl using $ERC20VotesTimestampMock onlyGovernance relay protected against other proposers"
+    "id": "GovernorTimelockControl using $ERC20VotesTimestampMock onlyGovernance relay protected against other proposers",
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "GovernorTimelockControl using $ERC20VotesTimestampMock onlyGovernance updateTimelock can be executed through governance to"
@@ -3534,11 +3359,6 @@
     "note": "block.number is hardcoded at 0 (see COMPATIBILITY.md); manifests as block-number diffs or checkpoint-count mismatches, since checkpoints never actually advance"
   },
   {
-    "id": "Time clocks timestamp",
-    "cause": "fixed-timestamp",
-    "note": "block.timestamp is hardcoded (see COMPATIBILITY.md); manifests as timestamp diffs, delay/schedule assertions, or (for ERC20Votes-style checkpoints) an undercount since votes never actually advance in time"
-  },
-  {
     "id": "TimelockController ERC165 when the interfaceId is not supported uses less than 30k",
     "cause": "gas-stub"
   },
@@ -3569,18 +3389,12 @@
     "cause": "execution reverted"
   },
   {
-    "id": "TimelockController methods batch schedule proposer can schedule"
-  },
-  {
     "id": "TimelockController methods simple execute with scheduled operation on time executor can reveal",
     "cause": "execution reverted"
   },
   {
     "id": "TimelockController methods simple execute with scheduled operation on time prevents reentrancy execution",
     "cause": "execution reverted"
-  },
-  {
-    "id": "TimelockController methods simple schedule proposer can schedule"
   },
   {
     "id": "TimelockController usage scenario call",
@@ -3689,10 +3503,6 @@
     "cause": "eth_signTypedData_v4"
   },
   {
-    "id": "Votes vote with blockNumber run votes workflow delegation with signature with signature rejects expired permit",
-    "cause": "eth_signTypedData_v4"
-  },
-  {
     "id": "Votes vote with blockNumber run votes workflow getPastTotalSupply returns 0 if there are no checkpoints",
     "cause": "execution reverted"
   },
@@ -3701,16 +3511,8 @@
     "cause": "execution reverted"
   },
   {
-    "id": "Votes vote with timestamp ERC-6372 behavior in timestamp mode should have a correct clock value",
-    "cause": "fixed-timestamp"
-  },
-  {
     "id": "Votes vote with timestamp run votes workflow Compound test suite getPastVotes returns the latest block if >= last checkpoint block",
-    "cause": "execution reverted"
-  },
-  {
-    "id": "Votes vote with timestamp run votes workflow Compound test suite getPastVotes returns zero if < first checkpoint block",
-    "cause": "execution reverted"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "Votes vote with timestamp run votes workflow delegation with signature delegation update",
@@ -3722,10 +3524,6 @@
   },
   {
     "id": "Votes vote with timestamp run votes workflow delegation with signature with signature accept signed delegation",
-    "cause": "eth_signTypedData_v4"
-  },
-  {
-    "id": "Votes vote with timestamp run votes workflow delegation with signature with signature rejects expired permit",
     "cause": "eth_signTypedData_v4"
   },
   {
@@ -3745,10 +3543,6 @@
     "cause": "execution reverted"
   },
   {
-    "id": "VotesExtended checkpoint balances with timestamp reverts if current timepoint <= timepoint",
-    "cause": "fixed-timestamp"
-  },
-  {
     "id": "VotesExtended checkpoint delegates with blockNumber checkpoint delegates",
     "cause": "execution reverted"
   },
@@ -3759,10 +3553,6 @@
   {
     "id": "VotesExtended checkpoint delegates with timestamp checkpoint delegates",
     "cause": "execution reverted"
-  },
-  {
-    "id": "VotesExtended checkpoint delegates with timestamp reverts if current timepoint <= timepoint",
-    "cause": "fixed-timestamp"
   },
   {
     "id": "VotesExtended vote with blockNumber ERC-6372 behavior in blockNumber mode should have a correct clock value",
@@ -3793,10 +3583,6 @@
     "cause": "eth_signTypedData_v4"
   },
   {
-    "id": "VotesExtended vote with blockNumber run votes workflow delegation with signature with signature rejects expired permit",
-    "cause": "eth_signTypedData_v4"
-  },
-  {
     "id": "VotesExtended vote with blockNumber run votes workflow getPastTotalSupply returns 0 if there are no checkpoints",
     "cause": "execution reverted"
   },
@@ -3805,16 +3591,12 @@
     "cause": "execution reverted"
   },
   {
-    "id": "VotesExtended vote with timestamp ERC-6372 behavior in timestamp mode should have a correct clock value",
-    "cause": "fixed-timestamp"
-  },
-  {
     "id": "VotesExtended vote with timestamp run votes workflow Compound test suite getPastVotes returns the latest block if >= last checkpoint block",
-    "cause": "execution reverted"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "VotesExtended vote with timestamp run votes workflow Compound test suite getPastVotes returns zero if < first checkpoint block",
-    "cause": "execution reverted"
+    "cause": "hardhat-time-rpc"
   },
   {
     "id": "VotesExtended vote with timestamp run votes workflow delegation with signature delegation update",
@@ -3826,10 +3608,6 @@
   },
   {
     "id": "VotesExtended vote with timestamp run votes workflow delegation with signature with signature accept signed delegation",
-    "cause": "eth_signTypedData_v4"
-  },
-  {
-    "id": "VotesExtended vote with timestamp run votes workflow delegation with signature with signature rejects expired permit",
     "cause": "eth_signTypedData_v4"
   },
   {

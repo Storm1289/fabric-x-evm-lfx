@@ -71,7 +71,7 @@ func NewTestNode(ctx context.Context, tcfg TestNodeConfig) (*App, error) {
 	// does not wrap, and loadFixture stretches can commit far more than 128 blocks
 	// between reverts. Undersizing panics or drops historical reads mid-suite.
 	endorserDB := econfig.DB{Database: "memory", HistorySize: 16384}
-	endorser, endorserKVS, _, err := eapp.NewEndorserCore(endorserDB, testNodeChannel, testNodeNamespace, protocol, signer, evmConfig, true)
+	endorser, endorserKVS, _, err := eapp.NewEndorserCore(endorserDB, testNodeChannel, testNodeNamespace, protocol, signer, evmConfig, true, econfig.Endorser{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create endorser: %w", err)
 	}

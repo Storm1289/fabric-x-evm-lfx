@@ -12,6 +12,7 @@ import (
 	"errors"
 	"math/big"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum"
 	ethcommon "github.com/ethereum/go-ethereum/common"
@@ -20,6 +21,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/hyperledger/fabric-protos-go-apiv2/peer"
 	"github.com/hyperledger/fabric-x-evm/common"
+	"github.com/hyperledger/fabric-x-evm/endorser/config"
 	"github.com/hyperledger/fabric-x-evm/endorser/execution"
 	"github.com/hyperledger/fabric-x-sdk/endorsement"
 )
@@ -78,7 +80,7 @@ type stubEngine struct {
 	nonce       uint64
 }
 
-func (s *stubEngine) Execute(context.Context, *types.Transaction) (endorsement.ExecutionResult, error) {
+func (s *stubEngine) Execute(context.Context, *types.Transaction, uint64) (endorsement.ExecutionResult, error) {
 	return endorsement.ExecutionResult{}, s.execErr
 }
 func (s *stubEngine) Call(ethereum.CallMsg, *big.Int) ([]byte, error) {
@@ -112,14 +114,36 @@ func processEVMTxWithEngineErr(t *testing.T, execErr error) *peer.ProposalRespon
 	t.Helper()
 
 	// The stub engine ignores the tx, so it need not be signed.
-	f := &Endorser{Engine: &stubEngine{execErr: execErr}}
+	// Bounds must be set at construction (New); test helpers set them explicitly.
+	f := &Endorser{
+		Engine:    &stubEngine{execErr: execErr},
+		maxFuture: config.DefaultTimestampFutureSkew,
+		maxPast:   config.DefaultTimestampPastSkew,
+	}
 	tx := types.NewTx(&types.LegacyTx{Gas: 21000, GasPrice: big.NewInt(0)})
 
-	resp, err := f.Execute(context.Background(), endorsement.Invocation{}, tx)
+	resp, err := f.Execute(context.Background(), endorsement.Invocation{}, tx, time.Now())
 	if err != nil {
 		t.Fatalf("ProcessEVMTransaction must encode the failure in the response, got Go error: %v", err)
 	}
 	return resp
+}
+
+func TestExecute_WithDefaultBoundsAcceptsNow(t *testing.T) {
+	want := &peer.ProposalResponse{Response: &peer.Response{Status: common.StatusOK}}
+	f := &Endorser{
+		Engine:    &stubEngine{},
+		builder:   &stubBuilder{resp: want},
+		maxFuture: config.DefaultTimestampFutureSkew,
+		maxPast:   config.DefaultTimestampPastSkew,
+	}
+	got, err := f.Execute(context.Background(), endorsement.Invocation{}, types.NewTx(&types.LegacyTx{}), time.Now())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != want {
+		t.Fatalf("resp = %v, want %v (status %v)", got, want, got.GetResponse())
+	}
 }
 
 // A valid tx whose execution failed surfaces as StatusExecFailure (endorsable).
@@ -202,9 +226,14 @@ func TestCall_Success(t *testing.T) {
 // On a successful execution, Execute returns the builder's signed response.
 func TestExecute_Success(t *testing.T) {
 	want := &peer.ProposalResponse{Response: &peer.Response{Status: common.StatusOK}}
-	f := &Endorser{Engine: &stubEngine{}, builder: &stubBuilder{resp: want}}
+	f := &Endorser{
+		Engine:    &stubEngine{},
+		builder:   &stubBuilder{resp: want},
+		maxFuture: config.DefaultTimestampFutureSkew,
+		maxPast:   config.DefaultTimestampPastSkew,
+	}
 
-	got, err := f.Execute(context.Background(), endorsement.Invocation{}, types.NewTx(&types.LegacyTx{}))
+	got, err := f.Execute(context.Background(), endorsement.Invocation{}, types.NewTx(&types.LegacyTx{}), time.Now())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -215,9 +244,14 @@ func TestExecute_Success(t *testing.T) {
 
 // A signing/endorse failure rides in the response as a 500, not a Go error.
 func TestExecute_EndorseFailureIs500(t *testing.T) {
-	f := &Endorser{Engine: &stubEngine{}, builder: &stubBuilder{err: errors.New("sign: hsm down")}}
+	f := &Endorser{
+		Engine:    &stubEngine{},
+		builder:   &stubBuilder{err: errors.New("sign: hsm down")},
+		maxFuture: config.DefaultTimestampFutureSkew,
+		maxPast:   config.DefaultTimestampPastSkew,
+	}
 
-	resp, err := f.Execute(context.Background(), endorsement.Invocation{}, types.NewTx(&types.LegacyTx{}))
+	resp, err := f.Execute(context.Background(), endorsement.Invocation{}, types.NewTx(&types.LegacyTx{}), time.Now())
 	if err != nil {
 		t.Fatalf("endorse failure must ride in the response, got Go error: %v", err)
 	}

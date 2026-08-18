@@ -12,6 +12,7 @@ import (
 	"math/big"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum"
 	ethcommon "github.com/ethereum/go-ethereum/common"
@@ -100,7 +101,7 @@ func TestExecute_MapsResponseAndForwardsRequest(t *testing.T) {
 		CCID: &peer.ChaincodeID{Name: "ns", Version: "1.0"}, ProposalHash: []byte("ph"),
 	}
 
-	resp, err := c.Execute(context.Background(), inv, tx)
+	resp, err := c.Execute(context.Background(), inv, tx, time.Now())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -119,13 +120,16 @@ func TestExecute_MapsResponseAndForwardsRequest(t *testing.T) {
 	if inW.GetTxId() != "tx1" || inW.GetChaincodeName() != "ns" || inW.GetChaincodeVersion() != "1.0" || len(inW.GetArgs()) != 2 {
 		t.Errorf("forwarded invocation = %+v", inW)
 	}
+	if mock.gotExec.GetTimestamp() == 0 {
+		t.Error("forwarded timestamp = 0, want non-zero Unix second")
+	}
 }
 
 func TestExecute_TransportErrorIsReturned(t *testing.T) {
 	c := newClient(t, &mockServer{execErr: status.Error(codes.Unavailable, "down")})
 
 	tx := types.NewTx(&types.LegacyTx{Nonce: 0, Gas: 21000, GasPrice: big.NewInt(1)})
-	if _, err := c.Execute(context.Background(), endorsement.Invocation{}, tx); status.Code(err) != codes.Unavailable {
+	if _, err := c.Execute(context.Background(), endorsement.Invocation{}, tx, time.Now()); status.Code(err) != codes.Unavailable {
 		t.Fatalf("code = %v, want Unavailable", status.Code(err))
 	}
 }

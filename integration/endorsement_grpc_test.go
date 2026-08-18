@@ -223,7 +223,7 @@ func TestGRPCEndorsement_Integration(t *testing.T) {
 	// A valid tx is accepted; the same tx signed for the wrong chain ID fails
 	// sender recovery and is deterministically rejected.
 	key, tx1 := newSignedTx(t)
-	resp1, err := c.Execute(ctx, newInvocation(t, tx1), tx1)
+	resp1, err := c.Execute(ctx, newInvocation(t, tx1), tx1, time.Now())
 	if err != nil {
 		t.Fatalf("Execute (first): transport error %v", err)
 	}
@@ -233,7 +233,7 @@ func TestGRPCEndorsement_Integration(t *testing.T) {
 	}
 
 	tx2 := signTxWrongChainID(t, key)
-	resp2, err := c.Execute(ctx, newInvocation(t, tx2), tx2)
+	resp2, err := c.Execute(ctx, newInvocation(t, tx2), tx2, time.Now())
 	if err != nil {
 		t.Fatalf("Execute (wrong chain ID): transport error %v", err)
 	}
@@ -275,8 +275,8 @@ func TestGRPCEndorsement_Parity(t *testing.T) {
 	// for an endorsement policy to be satisfiable.
 	directKey, tx1 := newSignedTx(t)
 	inv1 := newInvocation(t, tx1)
-	directResp1, directErr := inProcess.Execute(ctx, inv1, tx1)
-	wireResp1, wireErr := c.Execute(ctx, inv1, tx1)
+	directResp1, directErr := inProcess.Execute(ctx, inv1, tx1, time.Now())
+	wireResp1, wireErr := c.Execute(ctx, inv1, tx1, time.Now())
 	if directErr != nil || wireErr != nil {
 		t.Fatalf("Execute (first) transport errors: direct=%v wire=%v", directErr, wireErr)
 	}
@@ -305,8 +305,8 @@ func TestGRPCEndorsement_Parity(t *testing.T) {
 
 	tx2 := signTxWrongChainID(t, directKey)
 	inv2 := newInvocation(t, tx2)
-	directResp2, directErr := inProcess.Execute(ctx, inv2, tx2)
-	wireResp2, wireErr := c.Execute(ctx, inv2, tx2)
+	directResp2, directErr := inProcess.Execute(ctx, inv2, tx2, time.Now())
+	wireResp2, wireErr := c.Execute(ctx, inv2, tx2, time.Now())
 	if directErr != nil || wireErr != nil {
 		t.Fatalf("Execute (wrong chain ID) transport errors: direct=%v wire=%v", directErr, wireErr)
 	}

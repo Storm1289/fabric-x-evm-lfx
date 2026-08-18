@@ -10,6 +10,7 @@ package client
 import (
 	"context"
 	"math/big"
+	"time"
 
 	"github.com/ethereum/go-ethereum"
 	ethcommon "github.com/ethereum/go-ethereum/common"
@@ -43,7 +44,8 @@ func (c *Client) Close() error {
 
 // Execute endorses an Ethereum transaction. A gRPC error is a transport fault;
 // application outcomes ride in the response status.
-func (c *Client) Execute(ctx context.Context, inv endorsement.Invocation, ethTx *types.Transaction) (*peer.ProposalResponse, error) {
+// timestamp is the gateway-supplied wall time for EVM block.timestamp.
+func (c *Client) Execute(ctx context.Context, inv endorsement.Invocation, ethTx *types.Transaction, timestamp time.Time) (*peer.ProposalResponse, error) {
 	raw, err := ethTx.MarshalBinary()
 	if err != nil {
 		return nil, err
@@ -52,6 +54,7 @@ func (c *Client) Execute(ctx context.Context, inv endorsement.Invocation, ethTx 
 		EthereumTx:   raw,
 		ProposalHash: inv.ProposalHash,
 		Invocation:   invocationMsg(inv),
+		Timestamp:    timestamp.Unix(),
 	})
 	if err != nil {
 		return nil, err

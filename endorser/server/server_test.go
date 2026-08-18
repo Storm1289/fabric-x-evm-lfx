@@ -13,6 +13,7 @@ import (
 	"math/big"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum"
 	ethcommon "github.com/ethereum/go-ethereum/common"
@@ -47,10 +48,12 @@ type stubService struct {
 	gotInv   endorsement.Invocation
 	gotMsg   *ethereum.CallMsg
 	gotBlock *big.Int
+	gotTS    time.Time
 }
 
-func (s *stubService) Execute(_ context.Context, inv endorsement.Invocation, _ *types.Transaction) (*peer.ProposalResponse, error) {
+func (s *stubService) Execute(_ context.Context, inv endorsement.Invocation, _ *types.Transaction, ts time.Time) (*peer.ProposalResponse, error) {
 	s.gotInv = inv
+	s.gotTS = ts
 	return s.execResp, s.execErr
 }
 func (s *stubService) Call(_ context.Context, msg *ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
@@ -244,6 +247,31 @@ func TestExecute_MapsProposalResponse(t *testing.T) {
 	}
 	if !bytes.Equal(resp.GetEndorserId(), []byte("id")) || !bytes.Equal(resp.GetSignature(), []byte("sig")) {
 		t.Errorf("endorserId = %x, signature = %x", resp.GetEndorserId(), resp.GetSignature())
+	}
+}
+
+// Proto timestamp 0 is "unset" and becomes a zero time.Time; a non-zero Unix
+// second is forwarded to the service.
+func TestExecute_ForwardsTimestamp(t *testing.T) {
+	svc := &stubService{execResp: &peer.ProposalResponse{Response: &peer.Response{Status: common.StatusOK}}}
+	client := newTestClient(t, svc)
+
+	tx := types.NewTx(&types.LegacyTx{Nonce: 0, Gas: 21000, GasPrice: big.NewInt(1)})
+	raw, _ := tx.MarshalBinary()
+
+	if _, err := client.Execute(context.Background(), &endorsementpb.ExecuteRequest{EthereumTx: raw, Timestamp: 0}); err != nil {
+		t.Fatalf("timestamp 0: %v", err)
+	}
+	if !svc.gotTS.IsZero() {
+		t.Errorf("timestamp 0: got %v, want zero time", svc.gotTS)
+	}
+
+	want := int64(1_700_000_123)
+	if _, err := client.Execute(context.Background(), &endorsementpb.ExecuteRequest{EthereumTx: raw, Timestamp: want}); err != nil {
+		t.Fatalf("timestamp set: %v", err)
+	}
+	if svc.gotTS.Unix() != want {
+		t.Errorf("timestamp = %d, want %d", svc.gotTS.Unix(), want)
 	}
 }
 
