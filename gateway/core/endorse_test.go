@@ -319,7 +319,6 @@ type blockingEndorser struct {
 	release <-chan struct{}
 }
 
-func (b *blockingEndorser) Execute(ctx context.Context, inv endorsement.Invocation, ethTx *types.Transaction, ts time.Time) (*peer.ProposalResponse, error) {
 func (b *blockingEndorser) Execute(ctx context.Context, inv endorsement.Invocation, ethTx *types.Transaction, _ time.Time) (*peer.ProposalResponse, error) {
 	select {
 	case <-b.release:
