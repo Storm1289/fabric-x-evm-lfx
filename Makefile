@@ -255,17 +255,20 @@ fetch-execution-specs-tests:
 
 .PHONY: eth-tests
 eth-tests: fetch-execution-specs-tests
-	@go test -test.fullpath=true -timeout 2000s -run '^(TestEthereumTests|TestTransactionTests)$$' github.com/hyperledger/fabric-x-evm/integration
-
-# Single-file smoke test — CI runs hardhat-tests-full (below) instead.
-.PHONY: hardhat-tests
-hardhat-tests:
-	@./scripts/run_hardhat_test.sh
+	@./scripts/run_eth_tests.sh
 
 # Full OZ compatible set — what CI's oz-hardhat-compat job runs.
-.PHONY: hardhat-tests-full
-hardhat-tests-full:
-	@./scripts/run_hardhat_test.sh --full
+# Narrow it with FILE= and/or GREP= for a focused local run (no baseline diff):
+#   make hardhat-tests FILE=test/token/ERC20/ERC20.test.js
+#   make hardhat-tests GREP='ERC20 _mint'
+# PORT= runs the testnode somewhere other than 8545, so a second run can go
+# alongside one already in progress.
+.PHONY: hardhat-tests
+hardhat-tests:
+	@./scripts/run_hardhat_test.sh \
+		$(if $(FILE),--file '$(FILE)') \
+		$(if $(GREP),--grep '$(GREP)') \
+		$(if $(PORT),--port '$(PORT)')
 
 .PHONY: perf-tests
 perf-tests: pre-pull-images

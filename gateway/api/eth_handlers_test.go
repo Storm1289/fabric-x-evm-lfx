@@ -506,21 +506,21 @@ func TestGetTransactionReceipt_BackendError(t *testing.T) {
 
 // ---- Fees ----
 
-func TestEstimateGas_HappyReturnsConstant(t *testing.T) {
-	api := NewEthAPI(&stubBackend{})
+func TestEstimateGas_HappyReturnsUsedGas(t *testing.T) {
+	api := NewEthAPI(&stubBackend{estGas: 42123})
 	got, err := api.EstimateGas(context.Background(), map[string]any{}, nil)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if got == nil || uint64(*got) != 10_000_000 {
-		t.Errorf("gas = %v, want 10000000", got)
+	if got == nil || uint64(*got) != 42123 {
+		t.Errorf("gas = %v, want 42123", got)
 	}
 }
 
 func TestEstimateGas_CallErrorPropagates(t *testing.T) {
-	api := NewEthAPI(&stubBackend{callErr: errBoom})
+	api := NewEthAPI(&stubBackend{estErr: errBoom})
 	if _, err := api.EstimateGas(context.Background(), map[string]any{}, nil); err == nil {
-		t.Fatal("expected error from underlying Call")
+		t.Fatal("expected error from underlying EstimateGas")
 	}
 }
 
@@ -731,14 +731,14 @@ func TestCall_BlockNumberByHashError(t *testing.T) {
 }
 
 func TestEstimateGas_WithExplicitBlock(t *testing.T) {
-	api := NewEthAPI(&stubBackend{})
+	api := NewEthAPI(&stubBackend{estGas: 53000})
 	blk := rpc.BlockNumberOrHashWithNumber(rpc.BlockNumber(7))
 	got, err := api.EstimateGas(context.Background(), map[string]any{}, &blk)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if got == nil || uint64(*got) != 10_000_000 {
-		t.Errorf("gas = %v, want 10000000", got)
+	if got == nil || uint64(*got) != 53000 {
+		t.Errorf("gas = %v, want 53000", got)
 	}
 }
 

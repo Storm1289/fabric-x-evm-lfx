@@ -214,10 +214,12 @@ func TestGRPCEndorsement_Integration(t *testing.T) {
 	}
 
 	// A call to an address with no code succeeds with empty output - standard
-	// EVM semantics, needs no funded account.
+	// EVM semantics, needs no funded account. usedGas is still non-zero (intrinsic).
 	msg := &ethereum.CallMsg{To: &account}
-	if out, err := c.Call(ctx, msg, nil); err != nil || len(out) != 0 {
-		t.Errorf("Call = (%x, %v), want (empty, nil)", out, err)
+	if out, gas, err := c.Call(ctx, msg, nil); err != nil || len(out) != 0 {
+		t.Errorf("Call = (%x, %d, %v), want (empty, any, nil)", out, gas, err)
+	} else if gas == 0 {
+		t.Error("Call usedGas = 0, want non-zero EVM gas")
 	}
 
 	// A valid tx is accepted; the same tx signed for the wrong chain ID fails

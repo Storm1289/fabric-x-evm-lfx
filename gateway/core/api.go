@@ -191,6 +191,11 @@ func (g *Gateway) CallContract(ctx context.Context, call ethereum.CallMsg, block
 	return g.endorsers.CallContract(ctx, call, blockNumber)
 }
 
+// EstimateGas simulates a call against the endorser and returns EVM usedGas.
+func (g *Gateway) EstimateGas(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) (uint64, error) {
+	return g.endorsers.EstimateGas(ctx, call, blockNumber)
+}
+
 // ExecuteEthTx requests endorsements for the submitted ethereum-style transaction.
 func (g *Gateway) ExecuteEthTx(ctx context.Context, tx *types.Transaction) (sdk.Endorsement, error) {
 	return g.endorsers.ExecuteTransaction(ctx, tx)
@@ -384,7 +389,7 @@ func (g *Gateway) Stop() error {
 
 	total, invalid, totalEnq, conflictEnq := g.TxQueue.Stats()
 	if total > 0 {
-		log.Println("gw stats: valid/invalid/invalid rate        ", total, invalid, float64(invalid)/float64(total))
+		log.Println("gw stats: valid/invalid/invalid rate ", total, invalid, float64(invalid)/float64(total))
 		log.Println("gw stats: total/conflicting/conflicting rate", totalEnq, conflictEnq, float64(conflictEnq)/float64(totalEnq))
 	}
 

@@ -73,6 +73,7 @@ func TestResponseStatusServerError(t *testing.T) {
 type stubEngine struct {
 	execErr     error
 	callPayload []byte
+	callGas     uint64
 	callErr     error
 	balance     *big.Int
 	storage     []byte
@@ -83,8 +84,8 @@ type stubEngine struct {
 func (s *stubEngine) Execute(context.Context, *types.Transaction, uint64) (endorsement.ExecutionResult, error) {
 	return endorsement.ExecutionResult{}, s.execErr
 }
-func (s *stubEngine) Call(ethereum.CallMsg, *big.Int) ([]byte, error) {
-	return s.callPayload, s.callErr
+func (s *stubEngine) Call(ethereum.CallMsg, *big.Int) ([]byte, uint64, error) {
+	return s.callPayload, s.callGas, s.callErr
 }
 func (s *stubEngine) BalanceAt(context.Context, ethcommon.Address, *big.Int) (*big.Int, error) {
 	return s.balance, nil
@@ -178,9 +179,9 @@ func TestProcessEVMTransaction_InfraErrorIs500(t *testing.T) {
 // and the returned payload.
 func TestCall_Revert(t *testing.T) {
 	payload := []byte{0x08, 0xc3, 0x79, 0xa0}
-	f := &Endorser{Engine: &stubEngine{callPayload: payload, callErr: vm.ErrExecutionReverted}}
+	f := &Endorser{Engine: &stubEngine{callPayload: payload, callGas: 21000, callErr: vm.ErrExecutionReverted}}
 
-	got, err := f.Call(context.Background(), &ethereum.CallMsg{}, nil)
+	got, gas, err := f.Call(context.Background(), &ethereum.CallMsg{}, nil)
 
 	var callErr *common.CallError
 	if !errors.As(err, &callErr) {
@@ -192,13 +193,16 @@ func TestCall_Revert(t *testing.T) {
 	if !bytes.Equal(callErr.Data, payload) || !bytes.Equal(got, payload) {
 		t.Errorf("payload: CallError.Data = %x, returned = %x, want %x", callErr.Data, got, payload)
 	}
+	if gas != 21000 {
+		t.Errorf("usedGas = %d, want 21000", gas)
+	}
 }
 
 // A valid call whose execution failed is classified StatusExecFailure.
 func TestCall_ExecFailure(t *testing.T) {
 	f := &Endorser{Engine: &stubEngine{callErr: execution.NewExecFailure(vm.ErrOutOfGas)}}
 
-	_, err := f.Call(context.Background(), &ethereum.CallMsg{}, nil)
+	_, _, err := f.Call(context.Background(), &ethereum.CallMsg{}, nil)
 
 	var callErr *common.CallError
 	if !errors.As(err, &callErr) {
@@ -212,14 +216,17 @@ func TestCall_ExecFailure(t *testing.T) {
 // A successful call returns the payload and no error.
 func TestCall_Success(t *testing.T) {
 	want := []byte{0xde, 0xad}
-	f := &Endorser{Engine: &stubEngine{callPayload: want}}
+	f := &Endorser{Engine: &stubEngine{callPayload: want, callGas: 42000}}
 
-	got, err := f.Call(context.Background(), &ethereum.CallMsg{}, nil)
+	got, gas, err := f.Call(context.Background(), &ethereum.CallMsg{}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !bytes.Equal(got, want) {
 		t.Errorf("payload = %x, want %x", got, want)
+	}
+	if gas != 42000 {
+		t.Errorf("usedGas = %d, want 42000", gas)
 	}
 }
 

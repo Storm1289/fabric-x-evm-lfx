@@ -27,6 +27,7 @@ import (
 
 type stubEndorser struct {
 	callPayload []byte
+	callGas     uint64
 	callErr     error
 	nonce       uint64
 	nonceErr    error
@@ -43,8 +44,8 @@ func (s *stubEndorser) Execute(ctx context.Context, inv endorsement.Invocation, 
 	s.lastTS = ts
 	return s.execResp, s.execErr
 }
-func (s *stubEndorser) Call(ctx context.Context, msg *ethereum.CallMsg, _ *big.Int) ([]byte, error) {
-	return s.callPayload, s.callErr
+func (s *stubEndorser) Call(ctx context.Context, msg *ethereum.CallMsg, _ *big.Int) ([]byte, uint64, error) {
+	return s.callPayload, s.callGas, s.callErr
 }
 func (s *stubEndorser) BalanceAt(ctx context.Context, _ ethcommon.Address, _ *big.Int) (*big.Int, error) {
 	return s.balance, nil
@@ -156,6 +157,31 @@ func TestCallContract_Status200ReturnsPayload(t *testing.T) {
 	}
 	if !bytes.Equal(got, want) {
 		t.Errorf("payload = %x, want %x", got, want)
+	}
+}
+
+func TestEstimateGas_ReturnsUsedGas(t *testing.T) {
+	c := newClient(&stubEndorser{callPayload: []byte{0x01}, callGas: 42123})
+
+	got, err := c.EstimateGas(context.Background(), ethereum.CallMsg{}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != 42123 {
+		t.Errorf("gas = %d, want 42123", got)
+	}
+}
+
+func TestEstimateGas_RevertPropagates(t *testing.T) {
+	c := newClient(&stubEndorser{
+		callErr: &common.CallError{Status: common.StatusEVMRevert, Message: "execution reverted", Data: []byte{0x08, 0xc3}},
+		callGas: 12000,
+	})
+
+	_, err := c.EstimateGas(context.Background(), ethereum.CallMsg{}, nil)
+	var rev *domain.RevertError
+	if !errors.As(err, &rev) {
+		t.Fatalf("expected *RevertError, got %T (%v)", err, err)
 	}
 }
 
@@ -336,7 +362,7 @@ type blockingEndorser struct {
 	release <-chan struct{}
 }
 
-func (b *blockingEndorser) Execute(ctx context.Context, inv endorsement.Invocation, ethTx *types.Transaction, ts time.Time) (*peer.ProposalResponse, error) {
+func (b *blockingEndorser) Execute(ctx context.Context, inv endorsement.Invocation, ethTx *types.Transaction, _ time.Time) (*peer.ProposalResponse, error) {
 	select {
 	case <-b.release:
 		return b.execResp, b.execErr

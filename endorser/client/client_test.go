@@ -135,23 +135,26 @@ func TestExecute_TransportErrorIsReturned(t *testing.T) {
 }
 
 func TestCall_Success(t *testing.T) {
-	c := newClient(t, &mockServer{callResp: &endorsementpb.CallResponse{ReturnData: []byte{0xde, 0xad}, Status: common.StatusOK}})
+	c := newClient(t, &mockServer{callResp: &endorsementpb.CallResponse{ReturnData: []byte{0xde, 0xad}, Status: common.StatusOK, UsedGas: 21000}})
 
-	out, err := c.Call(context.Background(), &ethereum.CallMsg{}, nil)
+	out, gas, err := c.Call(context.Background(), &ethereum.CallMsg{}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !bytes.Equal(out, []byte{0xde, 0xad}) {
 		t.Errorf("return = %x", out)
 	}
+	if gas != 21000 {
+		t.Errorf("usedGas = %d, want 21000", gas)
+	}
 }
 
 // A non-OK Call status comes back as a *common.CallError, not a gRPC error.
 func TestCall_RevertBecomesCallError(t *testing.T) {
 	data := []byte{0x08, 0xc3, 0x79, 0xa0}
-	c := newClient(t, &mockServer{callResp: &endorsementpb.CallResponse{ReturnData: data, Status: common.StatusEVMRevert, Message: "reverted"}})
+	c := newClient(t, &mockServer{callResp: &endorsementpb.CallResponse{ReturnData: data, Status: common.StatusEVMRevert, Message: "reverted", UsedGas: 15000}})
 
-	out, err := c.Call(context.Background(), &ethereum.CallMsg{}, nil)
+	out, gas, err := c.Call(context.Background(), &ethereum.CallMsg{}, nil)
 	ce, ok := err.(*common.CallError)
 	if !ok {
 		t.Fatalf("expected *common.CallError, got %T (%v)", err, err)
@@ -159,12 +162,15 @@ func TestCall_RevertBecomesCallError(t *testing.T) {
 	if !ce.Reverted() || ce.Message != "reverted" || !bytes.Equal(ce.Data, data) || !bytes.Equal(out, data) {
 		t.Errorf("callError = %+v, out = %x", ce, out)
 	}
+	if gas != 15000 {
+		t.Errorf("usedGas = %d, want 15000", gas)
+	}
 }
 
 func TestCall_TransportErrorIsNotCallError(t *testing.T) {
 	c := newClient(t, &mockServer{callErr: status.Error(codes.Internal, "boom")})
 
-	_, err := c.Call(context.Background(), &ethereum.CallMsg{}, nil)
+	_, _, err := c.Call(context.Background(), &ethereum.CallMsg{}, nil)
 	if _, ok := err.(*common.CallError); ok {
 		t.Fatal("transport error must not be a CallError")
 	}
@@ -184,7 +190,7 @@ func TestCall_ForwardsAllFields(t *testing.T) {
 		To:   &to, Gas: 5000, GasPrice: big.NewInt(7), Value: big.NewInt(9), Data: []byte{0xbe, 0xef},
 	}
 
-	if _, err := c.Call(context.Background(), msg, big.NewInt(42)); err != nil {
+	if _, _, err := c.Call(context.Background(), msg, big.NewInt(42)); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	got := mock.gotCall

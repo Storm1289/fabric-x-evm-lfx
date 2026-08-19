@@ -37,6 +37,7 @@ type stubService struct {
 	execResp *peer.ProposalResponse
 	execErr  error
 	callOut  []byte
+	callGas  uint64
 	callErr  error
 	balance  *big.Int
 	storage  []byte
@@ -56,9 +57,9 @@ func (s *stubService) Execute(_ context.Context, inv endorsement.Invocation, _ *
 	s.gotTS = ts
 	return s.execResp, s.execErr
 }
-func (s *stubService) Call(_ context.Context, msg *ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
+func (s *stubService) Call(_ context.Context, msg *ethereum.CallMsg, blockNumber *big.Int) ([]byte, uint64, error) {
 	s.gotMsg, s.gotBlock = msg, blockNumber
-	return s.callOut, s.callErr
+	return s.callOut, s.callGas, s.callErr
 }
 func (s *stubService) BalanceAt(_ context.Context, _ ethcommon.Address, _ *big.Int) (*big.Int, error) {
 	return s.balance, s.readErr
@@ -181,7 +182,7 @@ func TestReadErrors_AreGRPCErrors(t *testing.T) {
 
 func TestCall_Success(t *testing.T) {
 	want := []byte{0xde, 0xad}
-	client := newTestClient(t, &stubService{callOut: want})
+	client := newTestClient(t, &stubService{callOut: want, callGas: 21000})
 
 	resp, err := client.Call(context.Background(), &endorsementpb.CallRequest{})
 	if err != nil {
@@ -192,6 +193,9 @@ func TestCall_Success(t *testing.T) {
 	}
 	if resp.GetStatus() != common.StatusOK {
 		t.Errorf("status = %d, want %d", resp.GetStatus(), common.StatusOK)
+	}
+	if resp.GetUsedGas() != 21000 {
+		t.Errorf("usedGas = %d, want 21000", resp.GetUsedGas())
 	}
 }
 

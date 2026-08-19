@@ -361,11 +361,13 @@ type stubBackend struct {
 	nonce      uint64
 	nonceErr   error
 
-	// Send / Call
+	// Send / Call / EstimateGas
 	sendErr  error
 	lastSent *types.Transaction
 	callRet  []byte
 	callErr  error
+	estGas   uint64
+	estErr   error
 
 	// Tx reads
 	txByHash         map[common.Hash]*domain.Transaction
@@ -462,6 +464,19 @@ func (s *stubBackend) SendTransaction(ctx context.Context, tx *types.Transaction
 }
 func (s *stubBackend) CallContract(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
 	return s.callRet, s.callErr
+}
+func (s *stubBackend) EstimateGas(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) (uint64, error) {
+	if s.estErr != nil {
+		return 0, s.estErr
+	}
+	// Prefer explicit estGas; fall back to callErr so existing estimate-error tests work.
+	if s.estGas != 0 {
+		return s.estGas, nil
+	}
+	if s.callErr != nil {
+		return 0, s.callErr
+	}
+	return 21000, nil
 }
 func (s *stubBackend) TransactionByHash(ctx context.Context, hash common.Hash) (*domain.Transaction, error) {
 	if s.txByHashErr != nil {
