@@ -120,11 +120,13 @@ func (e *EVMEngine) Execute(ctx context.Context, tx *types.Transaction, blockTim
 // TIMESTAMP uses the endorser's wall clock (Unix seconds) so view functions see a time
 // consistent with gateway-stamped Execute. Historical block times are not reconstructed;
 // every call gets "now".
-func (e *EVMEngine) Call(msg ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
+// usedGas is the EVM gas consumed by the simulation; 0 when the call is rejected
+// before ApplyMessage runs.
+func (e *EVMEngine) Call(msg ethereum.CallMsg, blockNumber *big.Int) (ret []byte, usedGas uint64, err error) {
 	blockTime := uint64(time.Now().Unix())
 	ex, err := e.newExecutor(blockNumber, blockTime)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer ex.Close()
 
@@ -388,12 +390,13 @@ func callMsgToMessage(msg ethereum.CallMsg, baseFee *big.Int, skipNonceCheck, sk
 
 // Call executes a read-only call (eth_call semantics).
 // An empty revert is treated as a non-error: many Ethereum tools probe contracts this way.
-func (h *Executor) Call(msg ethereum.CallMsg) ([]byte, error) {
-	ret, err := h.execute(callMsgToMessage(msg, h.BlockCtx.BaseFee, true, true))
+// usedGas is the gas consumed by the EVM (for eth_estimateGas).
+func (h *Executor) Call(msg ethereum.CallMsg) (ret []byte, usedGas uint64, err error) {
+	ret, usedGas, err = h.execute(callMsgToMessage(msg, h.BlockCtx.BaseFee, true, true))
 	if errors.Is(err, vm.ErrExecutionReverted) && len(ret) == 0 {
-		return nil, nil // empty revert on a call is not an error
+		return nil, usedGas, nil // empty revert on a call is not an error
 	}
-	return ret, err
+	return ret, usedGas, err
 }
 
 // PrepareMessage is the transaction gate: it recovers the sender (validating the
@@ -430,13 +433,14 @@ func (h *Executor) Send(tx *types.Transaction) ([]byte, error) {
 
 	// Return the raw EVM result: on a revert that ret is the revert data (used to
 	// build the revert event); on other faults geth leaves it empty.
-	return h.execute(msg)
+	ret, _, err := h.execute(msg)
+	return ret, err
 }
 
 // execute applies production defaults then runs the EVM via ApplyMessage.
 // Gas prices are always zeroed (free gas) so buyGas never requires ETH balance.
 // If MaxTxGas is set, msg.GasLimit is capped before execution.
-func (h *Executor) execute(msg *core.Message) ([]byte, error) {
+func (h *Executor) execute(msg *core.Message) (ret []byte, usedGas uint64, err error) {
 	if msg.GasLimit == 0 {
 		msg.GasLimit = 5_000_000
 	}
@@ -456,7 +460,8 @@ func (h *Executor) execute(msg *core.Message) ([]byte, error) {
 
 // ApplyMessage runs msg on the EVM exactly as provided, without production defaults.
 // Use this in test infrastructure (testimpl) when real gas pricing is needed.
-func (h *Executor) ApplyMessage(msg *core.Message) ([]byte, error) {
+// usedGas is the gas consumed by the EVM (0 if rejected before ApplyMessage).
+func (h *Executor) ApplyMessage(msg *core.Message) (ret []byte, usedGas uint64, err error) {
 	evm := vm.NewEVM(h.BlockCtx, h.state, h.ChainCfg, vm.Config{})
 
 	// Snapshot before execution mirrors geth's approach and allows reverting on error.
@@ -474,7 +479,7 @@ func (h *Executor) ApplyMessage(msg *core.Message) ([]byte, error) {
 		// (nonce, funds, intrinsic gas, ...) and would never be accepted in a block.
 		// Snapshot revert mirrors geth.
 		h.state.RevertToSnapshot(snapshot)
-		return nil, &TxRejected{err: err}
+		return nil, 0, &TxRejected{err: err}
 	}
 
 	if result.Err != nil {
@@ -484,13 +489,13 @@ func (h *Executor) ApplyMessage(msg *core.Message) ([]byte, error) {
 		// rejection.
 		if errors.Is(result.Err, vm.ErrExecutionReverted) {
 			if reason, uErr := abi.UnpackRevert(result.ReturnData); uErr == nil {
-				return result.ReturnData, fmt.Errorf("%w: %v", vm.ErrExecutionReverted, reason)
+				return result.ReturnData, result.UsedGas, fmt.Errorf("%w: %v", vm.ErrExecutionReverted, reason)
 			}
-			return result.ReturnData, result.Err
+			return result.ReturnData, result.UsedGas, result.Err
 		}
-		return result.ReturnData, &ExecFailure{err: result.Err}
+		return result.ReturnData, result.UsedGas, &ExecFailure{err: result.Err}
 	}
-	return result.ReturnData, nil
+	return result.ReturnData, result.UsedGas, nil
 }
 
 // TxRejected tags an invalid transaction rejected before execution (nonce, funds,

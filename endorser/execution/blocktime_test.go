@@ -80,7 +80,7 @@ func TestCall_UsesWallClockBlockTime(t *testing.T) {
 
 	to := ethcommon.HexToAddress("0xdead")
 	before := uint64(time.Now().Unix())
-	_, err = eng.Call(ethereum.CallMsg{To: &to}, nil)
+	_, _, err = eng.Call(ethereum.CallMsg{To: &to}, nil)
 	after := uint64(time.Now().Unix())
 	if err != nil {
 		t.Fatalf("Call: %v", err)

@@ -78,22 +78,26 @@ func TestExecute_MaxTxGas(t *testing.T) {
 	// MaxTxGas below intrinsic gas (21000 for a simple transfer) → must fail
 	ex := newExecutor(1_000)
 	defer ex.Close()
-	if _, err := ex.execute(msg()); err == nil {
+	if _, _, err := ex.execute(msg()); err == nil {
 		t.Fatal("expected error when MaxTxGas < intrinsic gas, got nil")
 	}
 
 	// MaxTxGas at exactly intrinsic gas → simple transfer must succeed
 	ex2 := newExecutor(21_000)
 	defer ex2.Close()
-	if _, err := ex2.execute(msg()); err != nil {
+	if _, gas, err := ex2.execute(msg()); err != nil {
 		t.Fatalf("expected success when MaxTxGas == intrinsic gas, got: %v", err)
+	} else if gas == 0 {
+		t.Fatal("expected non-zero usedGas on success")
 	}
 
 	// MaxTxGas = 0 (unlimited) → declared gas used as-is, must succeed
 	ex3 := newExecutor(0)
 	defer ex3.Close()
-	if _, err := ex3.execute(msg()); err != nil {
+	if _, gas, err := ex3.execute(msg()); err != nil {
 		t.Fatalf("expected success when MaxTxGas == 0 (unlimited), got: %v", err)
+	} else if gas == 0 {
+		t.Fatal("expected non-zero usedGas on success")
 	}
 }
 

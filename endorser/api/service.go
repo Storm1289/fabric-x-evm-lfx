@@ -46,7 +46,9 @@ type Service interface {
 
 	// Call runs a read-only eth_call. On an EVM revert or a failed execution it
 	// returns a *common.CallError; the revert payload is returned alongside it.
-	Call(ctx context.Context, msg *ethereum.CallMsg, blockNumber *big.Int) ([]byte, error)
+	// usedGas is the EVM gas consumed by the simulation; callers that
+	// only need return data (eth_call) may ignore it.
+	Call(ctx context.Context, msg *ethereum.CallMsg, blockNumber *big.Int) (ret []byte, usedGas uint64, err error)
 
 	BalanceAt(ctx context.Context, account ethcommon.Address, blockNumber *big.Int) (*big.Int, error)
 	StorageAt(ctx context.Context, account ethcommon.Address, key ethcommon.Hash, blockNumber *big.Int) ([]byte, error)

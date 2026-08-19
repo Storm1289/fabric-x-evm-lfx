@@ -19,25 +19,33 @@ import (
 // parsers maps a --format value to the adapter that turns a runner's raw output
 // into []Result. Adding a runner later is "add one entry here."
 var parsers = map[string]func([]byte) ([]Result, error){
-	"mocha-json": ParseMochaJSON,
+	"mocha-json":   ParseMochaJSON,
+	"go-test-json": ParseGoTestJSON,
 }
 
-// suiteDefaults gives --baseline/--results a sensible default from --suite alone, so
-// the common case (CI, docs, day-to-day invocations) doesn't need to repeat both
-// paths every time. Explicit --baseline/--results always override; an unrecognized
-// --suite is still fine, it just doesn't unlock defaults (--suite is otherwise only
-// a report-header label).
+// suiteDefaults gives --baseline/--results/--format a sensible default from --suite
+// alone, so the common case (CI, docs, day-to-day invocations) doesn't need to
+// repeat all three every time. Explicit --baseline/--results/--format always
+// override; an unrecognized --suite is still fine, it just doesn't unlock
+// defaults (--suite is otherwise only a report-header label).
 var suiteDefaults = map[string]struct {
 	baselinePath string
 	resultsGlob  string
+	format       string
 }{
 	"oz-hardhat": {
 		baselinePath: "testdata/oz_known_failures.json",
 		resultsGlob:  "testdata/oz-hardhat-results/*.json",
+		format:       "mocha-json",
+	},
+	"eth-tests": {
+		baselinePath: "testdata/eth_known_failures.json",
+		resultsGlob:  "testdata/eth-tests-results/*.json",
+		format:       "go-test-json",
 	},
 }
 
-func applySuiteDefaults(suite string, baselinePath, resultsGlob *string) {
+func applySuiteDefaults(suite string, baselinePath, resultsGlob, format *string) {
 	d, ok := suiteDefaults[suite]
 	if !ok {
 		return
@@ -47,6 +55,9 @@ func applySuiteDefaults(suite string, baselinePath, resultsGlob *string) {
 	}
 	if *resultsGlob == "" {
 		*resultsGlob = d.resultsGlob
+	}
+	if *format == "" {
+		*format = d.format
 	}
 }
 
@@ -82,15 +93,18 @@ type commonFlags struct {
 func parseCommonFlags(name string, args []string) (*commonFlags, error) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	f := &commonFlags{}
-	fs.StringVar(&f.suite, "suite", "", "suite name, for the report header; a known suite (e.g. oz-hardhat) also supplies --baseline/--results defaults")
-	fs.StringVar(&f.format, "format", "mocha-json", "raw results format (mocha-json)")
+	fs.StringVar(&f.suite, "suite", "", "suite name, for the report header; a known suite (e.g. oz-hardhat) also supplies --baseline/--results/--format defaults")
+	fs.StringVar(&f.format, "format", "", "raw results format (mocha-json, go-test-json); a known --suite supplies a default, otherwise mocha-json")
 	fs.StringVar(&f.baselinePath, "baseline", "", "path to the baseline JSON file (defaults from --suite if known)")
 	fs.StringVar(&f.resultsGlob, "results", "", "glob of raw results files to parse (defaults from --suite if known)")
 	fs.BoolVar(&f.jsonOutput, "json", false, "(check only) print a machine-readable Summary as JSON instead of the human-readable report")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
-	applySuiteDefaults(f.suite, &f.baselinePath, &f.resultsGlob)
+	applySuiteDefaults(f.suite, &f.baselinePath, &f.resultsGlob, &f.format)
+	if f.format == "" {
+		f.format = "mocha-json"
+	}
 	if f.baselinePath == "" {
 		return nil, fmt.Errorf("--baseline is required")
 	}
@@ -105,8 +119,16 @@ func parseCommonFlags(name string, args []string) (*commonFlags, error) {
 // within) matched files is folded into one entry rather than double-counted — OZ's
 // suite genuinely does this (a shared-behavior helper invoked twice in one file
 // produces two identical fullTitles) — but only when every occurrence agrees on
-// status and message; a real disagreement (e.g. an overlapping --results glob mixing
-// two different runs of the same test) is ambiguous and gets rejected instead.
+// status and message.
+//
+// A disagreement is resolved by File, which the parser already attributes per
+// result: different files sharing an ID (e.g. ERC721.test.js and
+// ERC721Enumerable.test.js both running OZ's shared shouldBehaveLikeERC721 helper,
+// which reuses the exact same nested `it` titles) are genuinely two different
+// tests, so both are kept rather than rejected — the baseline entry for that ID
+// then just covers either occurrence. Same file (or file unknown) with disagreeing
+// outcomes is still ambiguous — most likely an overlapping --results glob mixing
+// two different runs of the same test — and stays a hard error.
 func loadResults(format, resultsGlob string) ([]Result, error) {
 	parse, ok := parsers[format]
 	if !ok {
@@ -134,14 +156,18 @@ func loadResults(format, resultsGlob string) ([]Result, error) {
 			return nil, fmt.Errorf("parse results %s: %w", p, err)
 		}
 		for _, r := range results {
-			if prev, dup := seen[r.ID]; dup {
-				if prev.Status == r.Status && prev.Message == r.Message {
-					continue
-				}
+			prev, dup := seen[r.ID]
+			switch {
+			case !dup:
+				seen[r.ID] = r
+				all = append(all, r)
+			case prev.Status == r.Status && prev.Message == r.Message:
+				continue // same logical test observed twice, fold into one
+			case prev.File != "" && r.File != "" && prev.File != r.File:
+				all = append(all, r) // different source files, genuinely different tests
+			default:
 				return nil, fmt.Errorf("test ID %q reported inconsistently (%s vs %s) in %s", r.ID, prev.Status, r.Status, p)
 			}
-			seen[r.ID] = r
-			all = append(all, r)
 		}
 	}
 	return all, nil
@@ -274,10 +300,10 @@ func tagMatching(baseline []Entry, messageByID map[string]string, match, cause, 
 
 func runTag(args []string) int {
 	fs := flag.NewFlagSet("tag", flag.ContinueOnError)
-	suite := fs.String("suite", "", "suite name; a known suite (e.g. oz-hardhat) supplies --baseline/--results defaults")
+	suite := fs.String("suite", "", "suite name; a known suite (e.g. oz-hardhat) supplies --baseline/--results/--format defaults")
 	baselinePath := fs.String("baseline", "", "path to the baseline JSON file (defaults from --suite if known)")
 	resultsGlob := fs.String("results", "", "glob of raw results files to parse (defaults from --suite if known)")
-	format := fs.String("format", "mocha-json", "raw results format (mocha-json)")
+	format := fs.String("format", "", "raw results format (mocha-json, go-test-json); a known --suite supplies a default, otherwise mocha-json")
 	match := fs.String("match", "", "substring to match against each entry's ID or current failure message")
 	cause := fs.String("cause", "", "cause to assign to every matching entry")
 	note := fs.String("note", "", "optional note to assign alongside cause/flaky")
@@ -287,7 +313,10 @@ func runTag(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	applySuiteDefaults(*suite, baselinePath, resultsGlob)
+	applySuiteDefaults(*suite, baselinePath, resultsGlob, format)
+	if *format == "" {
+		*format = "mocha-json"
+	}
 	if *baselinePath == "" || *resultsGlob == "" || *match == "" || (*cause == "" && !*flaky) {
 		fmt.Fprintln(os.Stderr, "usage: baseline tag --suite <name> --match <substring> (--cause <name> | --flaky) [--baseline <path>] [--results <glob>] [--note <text>] [--force]")
 		return 2

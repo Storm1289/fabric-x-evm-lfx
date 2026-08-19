@@ -134,25 +134,38 @@ func (e EndorsementClient) ExecuteTransaction(ctx context.Context, tx *types.Tra
 // An EVM revert from the endorser is surfaced as *domain.RevertError so the API
 // layer can map it to JSON-RPC -32000.
 func (e *EndorsementClient) CallContract(ctx context.Context, args ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
-	payload, err := e.endorsers[0].Call(ctx, &args, blockNumber)
+	payload, _, err := e.call(ctx, args, blockNumber)
+	return payload, err
+}
+
+// EstimateGas simulates the call and returns EVM usedGas.
+// Reverts and other call failures surface the same errors as CallContract.
+func (e *EndorsementClient) EstimateGas(ctx context.Context, args ethereum.CallMsg, blockNumber *big.Int) (uint64, error) {
+	_, gas, err := e.call(ctx, args, blockNumber)
+	return gas, err
+}
+
+// call is the shared endorser query path for eth_call and eth_estimateGas.
+func (e *EndorsementClient) call(ctx context.Context, args ethereum.CallMsg, blockNumber *big.Int) ([]byte, uint64, error) {
+	payload, gas, err := e.endorsers[0].Call(ctx, &args, blockNumber)
 	if err == nil {
-		return payload, nil
+		return payload, gas, nil
 	}
 
 	callErr, ok := errors.AsType[*common.CallError](err)
 	if !ok {
 		// Not an application outcome: a transport/delivery failure.
-		return nil, fmt.Errorf("process call: %w", err)
+		return nil, gas, fmt.Errorf("process call: %w", err)
 	}
 	if callErr.Reverted() {
-		return nil, &domain.RevertError{Reason: callErr.Message, Data: callErr.Data}
+		return nil, gas, &domain.RevertError{Reason: callErr.Message, Data: callErr.Data}
 	}
 	// For a call, both a failed execution and a rejected tx are surfaced as an
 	// execution error (-32000); only the reverted case carries data.
 	if callErr.Status == common.StatusExecFailure || callErr.Status == common.StatusTxRejected {
-		return nil, &domain.ExecutionError{Message: callErr.Message}
+		return nil, gas, &domain.ExecutionError{Message: callErr.Message}
 	}
-	return nil, fmt.Errorf("query response was not successful, error code %d, msg %s", callErr.Status, callErr.Message)
+	return nil, gas, fmt.Errorf("query response was not successful, error code %d, msg %s", callErr.Status, callErr.Message)
 }
 
 // BalanceAt returns an account's balance at the given block.

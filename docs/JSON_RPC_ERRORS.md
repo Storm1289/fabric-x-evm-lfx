@@ -44,8 +44,8 @@ The single source of truth in code is [`gateway/api/rpcerr`](../gateway/api/rpce
 
 ### `eth_estimateGas`
 
-`eth_estimateGas` proxies an internal `eth_call` before returning its constant, so it inherits
-the `eth_call` mapping:
+`eth_estimateGas` runs the same endorser simulation as `eth_call` and returns EVM `usedGas`,
+so it inherits the `eth_call` mapping:
 
 | Cause | Code |
 |------|-----:|

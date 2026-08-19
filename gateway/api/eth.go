@@ -50,6 +50,8 @@ type Backend interface {
 	// Transactions
 	SendTransaction(ctx context.Context, tx *types.Transaction) error                              // ethereum.TransactionSender
 	CallContract(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) // ethereum.ContractCaller
+	// EstimateGas returns EVM usedGas from a simulation.
+	EstimateGas(ctx context.Context, call ethereum.CallMsg, blockNumber *big.Int) (uint64, error)
 
 	// Transactions. Our transactions also include the status, so we can build receipts out of the same data.
 	// For pending transactions, BlockNumber will be 0 (converted to null in JSON response).
@@ -372,19 +374,29 @@ func (api *EthAPI) Call(ctx context.Context, args map[string]any, block rpc.Bloc
 func (api *EthAPI) EstimateGas(ctx context.Context, args map[string]any, block *rpc.BlockNumberOrHash) (*hexutil.Uint64, error) {
 	logger.Debugf("EthAPI.EstimateGas() called with args=%v", args)
 
-	// we invoke api.Call first to see if the tx is valid and won't revert
+	callMsg, err := argsToCallMsg(args)
+	if err != nil {
+		logger.Debugf("EthAPI.EstimateGas() returning error: %v", err)
+		return nil, err
+	}
 	blockRef := rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber)
 	if block != nil {
 		blockRef = *block
 	}
-	if _, err := api.Call(ctx, args, blockRef); err != nil {
+	blockNum, err := api.blockNumberOrHashToBlockNumber(ctx, blockRef)
+	if err != nil {
+		logger.Debugf("EthAPI.EstimateGas() returning error: %v", err)
 		return nil, err
 	}
 
-	// Gas is not metered; return a constant that satisfies the intrinsic-gas
-	// check in ValidateTx and allows Metamask/wallets to submit transactions.
-	// TODO: Implement proper gas estimation based on actual execution
-	u := hexutil.Uint64(10_000_000)
+	// Simulate via the endorser and return real EVM usedGas.
+	// Reverts and other execution failures surface as JSON-RPC errors, same as eth_call.
+	gas, err := api.b.EstimateGas(ctx, callMsg, blockNum)
+	if err != nil {
+		logger.Debugf("EthAPI.EstimateGas() returning error: %v", err)
+		return nil, classifyCallError(err)
+	}
+	u := hexutil.Uint64(gas)
 	logger.Debugf("EthAPI.EstimateGas() returning: %d", u)
 	return &u, nil
 }

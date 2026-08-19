@@ -44,21 +44,21 @@ is still left as the empty bloom.
 Alongside hand-written integration tests, the suite runs:
 
 - the official **ethereum/execution-specs** `state_tests` fixtures (`TestEthereumTests`),
-  fetched on demand into `testdata/execution-specs-tests/` (`make eth-tests`) — the same
-  conformance corpus geth and other clients validate against, pinned to the current forks
-  (Osaka + BPO1/BPO2, with Prague/Cancun as cheap regression). Known-failing vectors are
-  quarantined in `testdata/eth_tests.skip` and slow ones in `testdata/eth_tests.slow`; the
-  fixtures' expected state-root check always runs, while verification of our own trie-store
-  root is opt-in (`-verify_root`). Known divergences are documented under EVM execution
-  differences below.
+ fetched on demand into `testdata/execution-specs-tests/` (`make eth-tests`) — the same
+ conformance corpus geth and other clients validate against, pinned to the current forks
+ (Osaka + BPO1/BPO2, with Prague/Cancun as cheap regression). Known-failing vectors are
+ quarantined in `testdata/eth_tests.skip` and slow ones in `testdata/eth_tests.slow`; the
+ fixtures' expected state-root check always runs, while verification of our own trie-store
+ root is opt-in (`-verify_root`). Known divergences are documented under EVM execution
+ differences below.
 - the official **ethereum/execution-specs** `transaction_tests` fixtures
-  (`TestTransactionTests`, same `make eth-tests` run and fork allowlist) — these exercise
-  the gateway's raw-transaction admission path (`UnmarshalBinary` + `core.ValidateTx`)
-  rather than the EVM. They are all negative cases, so we assert the reject/accept verdict,
-  not the exact EEST exception string (our gateway may reject at a coarser level, e.g. an
-  unsupported transaction type); this matches go-ethereum's own `transaction_test.go`.
+ (`TestTransactionTests`, same `make eth-tests` run and fork allowlist) — these exercise
+ the gateway's raw-transaction admission path (`UnmarshalBinary` + `core.ValidateTx`)
+ rather than the EVM. They are all negative cases, so we assert the reject/accept verdict,
+ not the exact EEST exception string (our gateway may reject at a coarser level, e.g. an
+ unsupported transaction type); this matches go-ethereum's own `transaction_test.go`.
 - the **OpenZeppelin** contract test suites, run against a live network via Hardhat
-  (`scripts/run_hardhat_test.sh`).
+ (`scripts/run_hardhat_test.sh`).
 
 Per-suite pass rates and compatibility matrices will be added as coverage stabilises.
 
@@ -66,38 +66,38 @@ Per-suite pass rates and compatibility matrices will be added as coverage stabil
 
 ## Supported JSON-RPC methods
 
-| Method                                                        | Status | Notes                                          |
+| Method | Status | Notes |
 | ------------------------------------------------------------- | ------ | ---------------------------------------------- |
-| `eth_chainId`                                                 | ✅      |                                                |
-| `eth_blockNumber`                                             | ✅      |                                                |
-| `eth_getBlockByNumber`                                        | ✅      | several fields hardcoded — see below           |
-| `eth_getBlockByHash`                                          | ✅      | several fields hardcoded — see below           |
-| `eth_getBlockTransactionCountByHash`                          | ✅      |                                                |
-| `eth_getBlockTransactionCountByNumber`                        | ✅      |                                                |
-| `eth_getBalance`                                              | ✅      | routes to endorser; see state query caveats    |
-| `eth_getCode`                                                 | ✅      | routes to endorser                             |
-| `eth_getStorageAt`                                            | ✅      | routes to endorser                             |
-| `eth_getTransactionCount`                                     | ✅      | routes to endorser; see nonce caveats          |
-| `eth_sendRawTransaction`                                      | ✅      | limited mempool — see finality section         |
-| `eth_call`                                                    | ⚠️      | works but has caveats — see eth_call section   |
-| `eth_getTransactionByHash`                                    | ✅      | includes pending (null block fields)           |
-| `eth_getTransactionByBlockHashAndIndex`                       | ✅      |                                                |
-| `eth_getTransactionByBlockNumberAndIndex`                     | ✅      |                                                |
-| `eth_getTransactionReceipt`                                   | ✅      | see receipt section                            |
-| `eth_getLogs`                                                 | ✅      |                                                |
-| `eth_estimateGas`                                             | 🔧      | returns `10_000_000` after an `eth_call` check |
-| `eth_gasPrice`                                                | 🔧      | always returns `0`                             |
-| `eth_maxPriorityFeePerGas`                                    | 🔧      | always returns `0`                             |
-| `eth_feeHistory`                                              | 🔧      | returns all-zero arrays                        |
-| `net_version`                                                 | ✅      | returns chain ID as network ID                 |
-| `net_listening`                                               | 🔧      | always returns `true`                          |
-| `web3_clientVersion`                                          | 🔧      | returns `"fabric-evm/0.1.0"`                   |
-| `eth_subscribe` / `eth_unsubscribe`                           | ❌      | no WebSocket support                           |
-| `eth_newFilter` / filter APIs                                 | ❌      | no server-side filter state; use `eth_getLogs` |
-| `eth_sendTransaction`                                         | ❌      | server-side signing not supported              |
-| `eth_pendingTransactions`                                     | ❌      | endpoint not implemented                       |
-| `eth_getUncleBy*` / uncle count                               | ❌      | no uncle concept in Fabric                     |
-| `debug_*` / `admin_*` / `personal_*` / `miner_*` / `txpool_*` | ❌      | not implemented                                |
+| `eth_chainId` | ✅ | |
+| `eth_blockNumber` | ✅ | |
+| `eth_getBlockByNumber` | ✅ | several fields hardcoded — see below |
+| `eth_getBlockByHash` | ✅ | several fields hardcoded — see below |
+| `eth_getBlockTransactionCountByHash` | ✅ | |
+| `eth_getBlockTransactionCountByNumber` | ✅ | |
+| `eth_getBalance` | ✅ | routes to endorser; see state query caveats |
+| `eth_getCode` | ✅ | routes to endorser |
+| `eth_getStorageAt` | ✅ | routes to endorser |
+| `eth_getTransactionCount` | ✅ | routes to endorser; see nonce caveats |
+| `eth_sendRawTransaction` | ✅ | limited mempool — see finality section |
+| `eth_call` | ⚠️ | works but has caveats — see eth_call section |
+| `eth_getTransactionByHash` | ✅ | includes pending (null block fields) |
+| `eth_getTransactionByBlockHashAndIndex` | ✅ | |
+| `eth_getTransactionByBlockNumberAndIndex` | ✅ | |
+| `eth_getTransactionReceipt` | ✅ | see receipt section |
+| `eth_getLogs` | ✅ | |
+| `eth_estimateGas` | ✅ | returns EVM `usedGas` from a simulation |
+| `eth_gasPrice` | 🔧 | always returns `0` |
+| `eth_maxPriorityFeePerGas` | 🔧 | always returns `0` |
+| `eth_feeHistory` | 🔧 | returns all-zero arrays |
+| `net_version` | ✅ | returns chain ID as network ID |
+| `net_listening` | 🔧 | always returns `true` |
+| `web3_clientVersion` | 🔧 | returns `"fabric-evm/0.1.0"` |
+| `eth_subscribe` / `eth_unsubscribe` | ❌ | no WebSocket support |
+| `eth_newFilter` / filter APIs | ❌ | no server-side filter state; use `eth_getLogs` |
+| `eth_sendTransaction` | ❌ | server-side signing not supported |
+| `eth_pendingTransactions` | ❌ | endpoint not implemented |
+| `eth_getUncleBy*` / uncle count | ❌ | no uncle concept in Fabric |
+| `debug_*` / `admin_*` / `personal_*` / `miner_*` / `txpool_*` | ❌ | not implemented |
 
 Legend: ✅ works as expected · ⚠️ partially works · 🔧 stubbed/mocked · ❌ not implemented
 
@@ -111,21 +111,21 @@ enqueues, and returns the hash; a background worker endorses and submits) looks 
 client — return a hash, poll for a receipt. The execute-order-commit differences are:
 
 - **Finality is immediate**: once a transaction is in a committed block it is final — no reorgs,
-  no confirmations to wait for. (Hence the `safe`/`finalized` tags equal `latest`; see Block
-  number tags.)
+ no confirmations to wait for. (Hence the `safe`/`finalized` tags equal `latest`; see Block
+ number tags.)
 
 - **MVCC conflicts are a failure mode with no Ethereum equivalent**: a transaction that endorses
-  successfully can still fail at commit time if another transaction modified the same state keys in
-  between. It is committed with a non-zero Fabric validation code and `status=0`, and none of its
-  EVM state changes — including the nonce increment — are applied. At the receipt level this is
-  **indistinguishable** from an ordinary EVM revert (both are `status=0`), so a client cannot tell
-  a revert from a lost MVCC race; only the internal Fabric validation code separates them.
+ successfully can still fail at commit time if another transaction modified the same state keys in
+ between. It is committed with a non-zero Fabric validation code and `status=0`, and none of its
+ EVM state changes — including the nonce increment — are applied. At the receipt level this is
+ **indistinguishable** from an ordinary EVM revert (both are `status=0`), so a client cannot tell
+ a revert from a lost MVCC race; only the internal Fabric validation code separates them.
 
 - **Limited mempool**: submitted transactions are briefly queued before endorsement, but this is
-  not a full Ethereum mempool — transaction replacement/cancellation is unsupported and nonce gaps
-  are admitted rather than held until the gap fills (see Nonce management and Pre-flight transaction
-  validation). A new block is also only produced when there is transaction activity (see Block
-  representation → Block production).
+ not a full Ethereum mempool — transaction replacement/cancellation is unsupported and nonce gaps
+ are admitted rather than held until the gap fills (see Nonce management and Pre-flight transaction
+ validation). A new block is also only produced when there is transaction activity (see Block
+ representation → Block production).
 
 ---
 
@@ -144,25 +144,25 @@ lookup is too expensive — so the balance/cost check is skipped (gas is not met
 **Deliberate deviations from geth's failure model:**
 
 - **Sender balance is not validated**: `txpool.ValidateTransactionWithState` would reject a tx
-  whose `gas × gasPrice + value` exceeds the sender balance. We skip this since gas is not
-  metered and balances are unfunded by default (see Gas and fees).
+ whose `gas × gasPrice + value` exceeds the sender balance. We skip this since gas is not
+ metered and balances are unfunded by default (see Gas and fees).
 - **Replacement transactions are not supported**: tracked in #62. A queued transaction cannot be
-  replaced or cancelled before it is endorsed.
+ replaced or cancelled before it is endorsed.
 - **Nonce gaps are accepted**: a transaction with a nonce higher than the account's current
-  nonce is admitted; the endorser enforces ordering at execution time.
+ nonce is admitted; the endorser enforces ordering at execution time.
 - **Blob transactions (EIP-4844, type 3) are rejected at submission**: the `Accept` bitmap
-  excludes them and `MaxBlobCount` is `0`.
+ excludes them and `MaxBlobCount` is `0`.
 - **Set-code transactions (EIP-7702, type 4) are rejected at submission**: the `Accept` bitmap
-  excludes them. Authorization-list checks are therefore skipped entirely.
+ excludes them. Authorization-list checks are therefore skipped entirely.
 - **Synthetic block context for stateless rules**: `head.Number = 0`, `head.Time = 0`,
-  `head.Difficulty = 0` (post-merge), `head.GasLimit = math.MaxUint64`. All forks in our chain
-  config activate at genesis, so any `(number, time)` yields the same fork rule set. Because the
-  block gas limit is effectively unbounded, the binding submission-time gas ceiling is the per-tx
-  Osaka cap (`params.MaxTxGas` = `1<<24` = 16,777,216), which geth enforces in
-  `txpool.ValidateTransaction` while Osaka is active.
+ `head.Difficulty = 0` (post-merge), `head.GasLimit = math.MaxUint64`. All forks in our chain
+ config activate at genesis, so any `(number, time)` yields the same fork rule set. Because the
+ block gas limit is effectively unbounded, the binding submission-time gas ceiling is the per-tx
+ Osaka cap (`params.MaxTxGas` = `1<<24` = 16,777,216), which geth enforces in
+ `txpool.ValidateTransaction` while Osaka is active.
 - **No RPC tx-fee cap**: geth's `internal/ethapi.SubmitTransaction` rejects transactions whose
-  total fee exceeds an operator-configured cap. We don't expose such a knob; submission is
-  accepted regardless of fee size, subject to the 256-bit sanity checks geth applies.
+ total fee exceeds an operator-configured cap. We don't expose such a knob; submission is
+ accepted regardless of fee size, subject to the 256-bit sanity checks geth applies.
 - **`MinTip = 0`**: any tip is accepted; we do not enforce a mempool-style minimum.
 
 The replay-protection (`!tx.Protected()`) and `MaxSize` (128 KiB) checks match geth's defaults.
@@ -257,10 +257,10 @@ etc.) will fail or produce wrong results for accounts that were never explicitly
 The following values are hardcoded or synthetic. Contracts should not rely on them matching real
 network values.
 
-| Opcode / field              | This system                                     | Ethereum                    |
+| Opcode / field | This system | Ethereum |
 | --------------------------- | ----------------------------------------------- | --------------------------- |
-| `BLOCKHASH(n)`              | always `0x000…`                                 | hash of block `n`           |
-| `COINBASE`                  | `0x000…`                                        | block proposer address      |
+| `BLOCKHASH(n)` | always `0x000…` | hash of block `n` |
+| `COINBASE` | `0x000…` | block proposer address |
 | `DIFFICULTY` / `PREVRANDAO` | `0x000…` (stub — do not rely on for randomness) | current random / difficulty |
 | `BASEFEE`                   | `0`                                             | actual EIP-1559 base fee    |
 | `BLOBBASEFEE`               | ~1 wei (calculated from `ExcessBlobGas = 0`)    | actual EIP-4844 blob fee    |
@@ -304,43 +304,43 @@ reason; gateway wall-clock timestamps alone do not replace them.
 
 Gas mechanics are intentionally not implemented.
 
-| Aspect                      | Fabric                               | Ethereum                            |
+| Aspect | Fabric | Ethereum |
 | --------------------------- | ------------------------------------ | ----------------------------------- |
-| `GASPRICE` opcode           | `0`                                  | actual tx gas price                 |
-| Sender balance check        | not performed                        | must cover `gas × gasPrice + value` |
-| Intrinsic gas deduction     | enforced at submission, not deducted | ~21 000 deducted before execution   |
-| Gas refund counter          | always `0`                           | tracks SSTORE/SELFDESTRUCT refunds  |
-| Default gas per call/deploy | `5 000 000` if not specified         | whatever the tx sets                |
-| Block gas limit             | `300 000 000` (EVM block context)    | network-set limit                   |
+| `GASPRICE` opcode | `0` | actual tx gas price |
+| Sender balance check | not performed | must cover `gas × gasPrice + value` |
+| Intrinsic gas deduction | enforced at submission, not deducted | ~21 000 deducted before execution |
+| Gas refund counter | always `0` | tracks SSTORE/SELFDESTRUCT refunds |
+| Default gas per call/deploy | `5 000 000` if not specified | whatever the tx sets |
+| Block gas limit | `300 000 000` (EVM block context) | network-set limit |
 
 **JSON-RPC fee stubs**: `eth_gasPrice` and `eth_maxPriorityFeePerGas` always return `0`;
-`eth_feeHistory` returns all-zero arrays. `eth_estimateGas` first runs an `eth_call` (so it *does*
-surface reverts as `-32000`; see eth_call / Error format), then returns the constant `10_000_000`
-— it is not a real estimate. Clients that use these values to set gas on future transactions will
-set `gasPrice = 0` and `gas = 10_000_000`, which is harmless here since gas is not enforced, but
-may confuse tooling.
+`eth_feeHistory` returns all-zero arrays. `eth_estimateGas` runs the same endorser simulation as
+`eth_call` and returns the EVM `usedGas`. Reverts surface as `-32000` with the
+revert payload (see eth_call / Error format). Clients that use these values to set gas on future
+transactions will set `gasPrice = 0` and a realistic gas limit; gas is still not enforced on
+submission here, but tooling that checks estimate bounds now gets meaningful numbers.
 
 ---
 
 ## Block representation
 
-| Field                                    | Value                              | Notes                                             |
+| Field | Value | Notes |
 | ---------------------------------------- | ---------------------------------- | ------------------------------------------------- |
-| `number`                                 | Fabric block number                |                                                   |
-| `hash`                                   | Fabric block header hash           |                                                   |
-| `parentHash`                             | Fabric previous block hash         |                                                   |
-| `timestamp`                              | Node wall-clock time at parse time | **Not** the Fabric block creation time — see note |
-| `transactions`                           | Full objects or hashes             | real data                                         |
-| `logsBloom`                              | `0x` + 512 hex zeros (empty bloom) | always the empty bloom — see Receipt note         |
-| `transactionsRoot`                       | empty-txs hash / zero              | no per-block MPT — see note                       |
-| `stateRoot`                              | MPT hash (only if trie enabled)    | not Ethereum-compatible — see note                |
-| `receiptsRoot`                           | empty-trie root                    | no MPT                                            |
-| `miner`                                  | `0x…0F4B`                          | sentinel; `COINBASE` opcode is `0x0` (separate)   |
-| `gasLimit` / `gasUsed` / `baseFeePerGas` | `0`                                | gas not metered                                   |
-| `difficulty` / `totalDifficulty`         | `0`                                |                                                   |
-| `uncles`                                 | `[]`                               | no uncle concept                                  |
-| `size`                                   | `0`                                |                                                   |
-| `extraData`                              | `"0x"`                             | empty bytes                                       |
+| `number` | Fabric block number | |
+| `hash` | Fabric block header hash | |
+| `parentHash` | Fabric previous block hash | |
+| `timestamp` | Node wall-clock time at parse time | **Not** the Fabric block creation time — see note |
+| `transactions` | Full objects or hashes | real data |
+| `logsBloom` | `0x` + 512 hex zeros (empty bloom) | always the empty bloom — see Receipt note |
+| `transactionsRoot` | empty-txs hash / zero | no per-block MPT — see note |
+| `stateRoot` | MPT hash (only if trie enabled) | not Ethereum-compatible — see note |
+| `receiptsRoot` | empty-trie root | no MPT |
+| `miner` | `0x…0F4B` | sentinel; `COINBASE` opcode is `0x0` (separate) |
+| `gasLimit` / `gasUsed` / `baseFeePerGas` | `0` | gas not metered |
+| `difficulty` / `totalDifficulty` | `0` | |
+| `uncles` | `[]` | no uncle concept |
+| `size` | `0` | |
+| `extraData` | `"0x"` | empty bytes |
 
 **Block timestamp**: The `timestamp` field is set to the node's wall-clock time
 (`time.Now().Unix()`) when the block is received and parsed by the Fabric SDK, as there is no
@@ -356,14 +356,14 @@ strings (see Internal notes), so the trie's leaf encoding differs.
 
 **Block number tags**: there are two resolvers, and they behave differently:
 - Block lookups (`eth_getBlockByNumber`, `eth_getBlockTransactionCountByNumber`,
-  `eth_getTransactionByBlockNumberAndIndex`) use `blockNumberToUint64`: `earliest` and the literal
-  `0x0` resolve to block `0` (genesis); `latest`, `pending`, `safe`, and `finalized` all resolve
-  to the latest committed block.
+ `eth_getTransactionByBlockNumberAndIndex`) use `blockNumberToUint64`: `earliest` and the literal
+ `0x0` resolve to block `0` (genesis); `latest`, `pending`, `safe`, and `finalized` all resolve
+ to the latest committed block.
 - State queries and `eth_call` (`eth_getBalance`, `eth_getCode`, `eth_getStorageAt`,
-  `eth_getTransactionCount`, `eth_call`) use `rpcBlockNumberToBigInt`: only `latest`/`pending`
-  resolve to latest; `earliest` resolves to block `0`; `safe`/`finalized` are passed through as
-  the raw negative sentinels (`-4`/`-3`) to the endorser, which does not interpret them as
-  "latest" — so do **not** rely on `safe`/`finalized` for state reads.
+ `eth_getTransactionCount`, `eth_call`) use `rpcBlockNumberToBigInt`: only `latest`/`pending`
+ resolve to latest; `earliest` resolves to block `0`; `safe`/`finalized` are passed through as
+ the raw negative sentinels (`-4`/`-3`) to the endorser, which does not interpret them as
+ "latest" — so do **not** rely on `safe`/`finalized` for state reads.
 
 In practice every committed Fabric block is final, so `finalized == latest` is semantically
 correct for block lookups; the lost distinction may still surprise ethers.js v6 / viem tooling.
@@ -386,15 +386,15 @@ moving `toBlock`, will wait indefinitely if no transaction activity is happening
 
 ## Receipt representation
 
-| Field                                                             | Value                          |
+| Field | Value |
 | ----------------------------------------------------------------- | ------------------------------ |
-| `status`                                                          | `1` (success) or `0` (failure) |
-| `transactionHash`, `blockHash`, `blockNumber`, `transactionIndex` | real data                      |
-| `from`, `to`, `contractAddress`                                   | real data                      |
-| `logs`                                                            | real data                      |
-| `cumulativeGasUsed`, `gasUsed`, `effectiveGasPrice`               | `0`                            |
-| `logsBloom`                                                       | `0x` + 512 zeros               |
-| `postState`                                                       | not set                        |
+| `status` | `1` (success) or `0` (failure) |
+| `transactionHash`, `blockHash`, `blockNumber`, `transactionIndex` | real data |
+| `from`, `to`, `contractAddress` | real data |
+| `logs` | real data |
+| `cumulativeGasUsed`, `gasUsed`, `effectiveGasPrice` | `0` |
+| `logsBloom` | `0x` + 512 zeros |
+| `postState` | not set |
 
 **`logsBloom` is empty**: the bloom filter is not computed; the field is present but always set to
 the all-zero empty bloom (`0x` + 512 hex zeros). Clients that pre-filter logs by testing the bloom
@@ -432,18 +432,18 @@ endpoint.
 endorser node for execution. Caveats:
 
 - **Block-hash queries resolve to the historical block**: when a block hash is passed as the block
-  parameter, the gateway resolves it to a block number (`BlockNumberByHash`) and snapshots state
-  at that height. An unknown hash returns `ethereum.NotFound`. (See the Block number tags note for
-  how the `safe`/`finalized` *tags* behave on state queries.)
+ parameter, the gateway resolves it to a block number (`BlockNumberByHash`) and snapshots state
+ at that height. An unknown hash returns `ethereum.NotFound`. (See the Block number tags note for
+ how the `safe`/`finalized` *tags* behave on state queries.)
 
 - **Read requests go to a single endorser**: all `eth_call` and state-query requests are routed to
-  `endorsers[0]` only. If that endorser is unreachable, reads fail regardless of how many
-  endorsers are configured.
+ `endorsers[0]` only. If that endorser is unreachable, reads fail regardless of how many
+ endorsers are configured.
 
 - **Write transactions fan out to all endorsers**: by contrast, a submitted transaction is sent to
-  *every* configured endorser in parallel and all must return a successful endorsement (the first
-  error aborts submission). More endorsers therefore increase the chance a transaction fails to be
-  endorsed if any one of them is unhealthy.
+ *every* configured endorser in parallel and all must return a successful endorsement (the first
+ error aborts submission). More endorsers therefore increase the chance a transaction fails to be
+ endorsed if any one of them is unhealthy.
 
 ---
 
@@ -453,12 +453,12 @@ The go-ethereum `rpc.Server` is used, so all errors produce valid JSON-RPC error
 Methods classify errors via the typed `rpcerr` package (`gateway/api/rpcerr`) so callers
 receive standard Ethereum codes.
 
-| Surface                                                                                 | Code                          | Notes                                       |
+| Surface | Code | Notes |
 | --------------------------------------------------------------------------------------- | ----------------------------- | ------------------------------------------- |
-| Malformed input (bad hex, unparseable raw tx, invalid call args)                        | `-32602` Invalid params       |                                             |
-| Validation rejection (nonce, intrinsic gas, funds, type, sender, EIP-3860, unprotected) | `-32003` Transaction rejected |                                             |
-| `eth_call` revert                                                                       | `-32000` Execution reverted   | `data` carries the raw revert payload (hex) |
-| Backend lookup / endorser / orderer failure                                             | `-32603` Internal error       |                                             |
+| Malformed input (bad hex, unparseable raw tx, invalid call args) | `-32602` Invalid params | |
+| Validation rejection (nonce, intrinsic gas, funds, type, sender, EIP-3860, unprotected) | `-32003` Transaction rejected | |
+| `eth_call` revert | `-32000` Execution reverted | `data` carries the raw revert payload (hex) |
+| Backend lookup / endorser / orderer failure | `-32603` Internal error | |
 
 For a reverted `eth_call` the gateway returns:
 ```json
@@ -469,10 +469,8 @@ Geth uses `code: 3` historically; the JSON-RPC spec reserves the server range `-
 `-32099`, which is what geth's own `rpc` server emits today. Libraries that decode custom
 Solidity errors (`error Foo(uint amount)`) read `data` directly and work unchanged.
 
-Note: `eth_estimateGas` returns a constant rather than a real estimate, but it first runs an
-internal `eth_call`, so it *does* surface reverts as `-32000` (with the revert payload as `data`).
-The returned gas value is therefore meaningless, but a revert during estimation is reported the
-same way a real node would report it.
+Note: `eth_estimateGas` returns the EVM `usedGas` from a simulation. A revert during estimation
+is reported the same way as `eth_call` (`-32000` with the revert payload as `data`).
 
 See [`docs/JSON_RPC_ERRORS.md`](JSON_RPC_ERRORS.md) for the full per-method mapping,
 example error objects, and the layering of the classifier.
@@ -482,20 +480,20 @@ example error objects, and the layering of the classifier.
 ## Not implemented
 
 - **WebSocket / subscriptions**: no `eth_subscribe`, `eth_unsubscribe`. No `eth_newFilter`,
-  `eth_newBlockFilter`, `eth_newPendingTransactionFilter`, `eth_getFilterChanges`,
-  `eth_getFilterLogs`, `eth_uninstallFilter`. Poll `eth_blockNumber` and `eth_getLogs` instead.
+ `eth_newBlockFilter`, `eth_newPendingTransactionFilter`, `eth_getFilterChanges`,
+ `eth_getFilterLogs`, `eth_uninstallFilter`. Poll `eth_blockNumber` and `eth_getLogs` instead.
 - **`eth_sendTransaction`**: server-side key management is not supported. Use
-  `eth_sendRawTransaction` with a client-signed transaction.
+ `eth_sendRawTransaction` with a client-signed transaction.
 - **Uncle queries** (`eth_getUncleByBlockHashAndIndex`, etc.): always empty; no uncle concept in
-  Fabric.
+ Fabric.
 - **`debug_*` / `admin_*` / `personal_*` / `miner_*` / `txpool_*`**: not implemented.
 - **`CREATE` deployed address not returned**: `evm.Create` returns the new contract address, but
-  this value is discarded. Callers that need the deployed address must compute it themselves:
-  `crypto.CreateAddress(senderAddr, tx.Nonce())`.
+ this value is discarded. Callers that need the deployed address must compute it themselves:
+ `crypto.CreateAddress(senderAddr, tx.Nonce())`.
 
 ---
 
 ## Internal notes
 
 - **Storage serialisation**: storage slot values are stored as hex strings (`value.Hex()`) in the
-  DB rather than raw 32-byte values. This is an internal detail with no impact on opcode behaviour.
+ DB rather than raw 32-byte values. This is an internal detail with no impact on opcode behaviour.

@@ -132,10 +132,11 @@ func (w *EVMEngineWrapper) Execute(ctx context.Context, tx *types.Transaction, b
 
 // Call executes a read-only call against the state.
 // The behavior depends on the configured mode.
-func (w *EVMEngineWrapper) Call(msg ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
+// usedGas is the EVM gas consumed .
+func (w *EVMEngineWrapper) Call(msg ethereum.CallMsg, blockNumber *big.Int) ([]byte, uint64, error) {
 	// Create the appropriate executor based on mode
 	type caller interface {
-		Call(ethereum.CallMsg) ([]byte, error)
+		Call(ethereum.CallMsg) ([]byte, uint64, error)
 		Close() error
 	}
 
@@ -148,11 +149,11 @@ func (w *EVMEngineWrapper) Call(msg ethereum.CallMsg, blockNumber *big.Int) ([]b
 	case DualStateDBMode:
 		ex, err = w.newExecutorWrapper()
 	default:
-		return nil, fmt.Errorf("unknown executor mode: %d", w.mode)
+		return nil, 0, fmt.Errorf("unknown executor mode: %d", w.mode)
 	}
 
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer ex.Close()
 
