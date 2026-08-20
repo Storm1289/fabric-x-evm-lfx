@@ -209,11 +209,6 @@ func blockRefFromLastBlock(lastBlock uint64) *uint64 {
 	return &lastBlock
 }
 
-// BlockAt returns a *uint64 for an explicit NewSnapshot height (including 0).
-func BlockAt(n uint64) *uint64 {
-	return &n
-}
-
 // Get retrieves the value and version for a key from the reader's snapshot.
 // This implements the execution.ReadStore interface with the signature:
 // Get(namespace, key string) (*blocks.WriteRecord, error)
@@ -239,7 +234,7 @@ func (r *Reader) Get(namespace, key string) (*blocks.WriteRecord, error) {
 
 		if false {
 			// Debug: JSON dump the record with truncated value
-			logRec := map[string]interface{}{
+			logRec := map[string]any{
 				"namespace": namespace,
 				"key":       key,
 				"block_num": vv.BlockNum,
@@ -314,7 +309,7 @@ func (kvs *LightKVS) Update(updates []KeyValueVersion) error {
 
 			if false {
 				// Debug: JSON dump the record with truncated value
-				logRec := map[string]interface{}{
+				logRec := map[string]any{
 					"key":       update.Key,
 					"block_num": update.BlockNum,
 					"tx_num":    update.TxNum,
