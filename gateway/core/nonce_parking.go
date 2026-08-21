@@ -35,8 +35,8 @@ type enqueuer interface {
 // nonceGate sequences a sender's transactions: it enqueues the next expected
 // nonce, parks higher nonces until the gap fills, and rejects lower ones. Each
 // sender's next nonce is cached in memory - seeded from state and advanced as
-// blocks commit - so in-order admits do no state reads; a tx ahead of the cache
-// re-reads once in case the cache lagged the ledger.
+// blocks commit - so in-order admits do no state reads; any other nonce re-reads
+// the ledger, since the cache can lag it in either direction.
 type nonceGate struct {
 	mu     sync.RWMutex
 	state  stateReader
@@ -99,16 +99,16 @@ func (g *nonceGate) Admit(ctx context.Context, tx *types.Transaction) error {
 	}
 	ss.lastSeen = g.now()
 
-	// A tx ahead of a cached next may just mean the cache lagged the ledger (a
-	// restart, a missed commit). Re-read once before treating it as a gap.
-	if !seeded && tx.Nonce() > ss.next {
+	// Trust the cache only on an exact match; any other nonce re-reads the
+	// ledger. The cache can lag in either direction - advanced out-of-band, or
+	// moved back by a snapshot revert - so re-sync to the committed value before
+	// deciding.
+	if !seeded && tx.Nonce() != ss.next {
 		committed, err := g.state.NonceAt(ctx, from, nil)
 		if err != nil {
 			return fmt.Errorf("look up nonce: %w", err)
 		}
-		if committed > ss.next {
-			ss.next = committed
-		}
+		ss.next = committed
 	}
 
 	switch {

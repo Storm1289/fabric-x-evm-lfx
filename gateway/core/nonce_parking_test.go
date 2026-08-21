@@ -240,6 +240,25 @@ func TestNonceGate_ReconcilesStaleCache(t *testing.T) {
 	require.Equal(t, []uint64{5, 8}, q.nonces())
 }
 
+func TestNonceGate_ReconcilesAfterRevert(t *testing.T) {
+	key := newKey(t)
+	from := senderAddr(key)
+	state := newStubState()
+	state.set(from, 5)
+	gate, q := newTestGate(state)
+
+	require.NoError(t, gate.Admit(context.Background(), newValidTx(t, key, validTxOpts{nonce: 5})))
+	require.Equal(t, []uint64{5}, q.nonces())
+
+	// A snapshot revert moves the ledger nonce back below the cache.
+	state.set(from, 2)
+
+	// Nonce 2 is below the stale cache (5), but reconcile re-syncs down and
+	// admits it instead of rejecting it as too low.
+	require.NoError(t, gate.Admit(context.Background(), newValidTx(t, key, validTxOpts{nonce: 2})))
+	require.Equal(t, []uint64{5, 2}, q.nonces())
+}
+
 func TestNonceGate_TTLEviction(t *testing.T) {
 	key := newKey(t)
 	state := newStubState()
