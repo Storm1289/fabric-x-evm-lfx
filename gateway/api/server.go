@@ -11,6 +11,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/ethereum/go-ethereum/node"
 	"github.com/ethereum/go-ethereum/rpc"
@@ -41,12 +42,42 @@ func NewServer(b Backend) (*rpc.Server, error) {
 }
 
 // NewHTTPServer creates and configures an HTTP server without starting it.
+// The same listener serves JSON-RPC over HTTP and WebSocket: Upgrade requests
+// go to srv.WebsocketHandler (nil origins = geth default handshake checks);
+// everything else uses the HTTP stack. Logging wraps the HTTP path only so WS
+// upgrades can Hijack the connection.
 func NewHTTPServer(srv *rpc.Server, addr string) *http.Server {
-	handler := node.NewHTTPHandlerStack(srv, []string{"*"}, []string{"*"}, nil)
+	// nil cors disables the CORS middleware; nil vhosts still allows IP Hosts
+	// (127.0.0.1 etc.) via geth's virtualHostHandler.
+	httpHandler := node.NewHTTPHandlerStack(srv, nil, nil, nil)
 	return &http.Server{
-		Addr:    addr,
-		Handler: &loggingHandler{next: handler},
+		Addr: addr,
+		Handler: &rpcTransportHandler{
+			ws:   srv.WebsocketHandler(nil),
+			http: &loggingHandler{next: httpHandler},
+		},
 	}
+}
+
+// rpcTransportHandler dispatches WebSocket upgrades before HTTP, matching
+// go-ethereum's httpServer.ServeHTTP check order (node/rpcstack.go).
+type rpcTransportHandler struct {
+	ws   http.Handler
+	http http.Handler
+}
+
+func (h *rpcTransportHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if isWebsocket(r) {
+		h.ws.ServeHTTP(w, r)
+		return
+	}
+	h.http.ServeHTTP(w, r)
+}
+
+// isWebsocket mirrors go-ethereum's unexported helper in node/rpcstack.go.
+func isWebsocket(r *http.Request) bool {
+	return strings.EqualFold(r.Header.Get("Upgrade"), "websocket") &&
+		strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade")
 }
 
 type loggingHandler struct {
