@@ -81,7 +81,7 @@ type Gateway struct {
 	ChainConfig     *params.ChainConfig
 	Signer          types.Signer
 	TxQueue         TxQueueInterface
-	nonceGate       *nonceGate
+	nonceGate       nonceSequencer
 	workerCount     int
 	wg              sync.WaitGroup
 	stopOnce        sync.Once
@@ -133,6 +133,15 @@ func New(ec *EndorsementClient, batchSubmitter *BatchSubmitter, store Store, cha
 	// nonces commit.
 	g.nonceGate = newNonceGate(g, g.Signer, g.TxQueue)
 	return g, nil
+}
+
+// UseTestNonceReconcile makes the nonce gate re-read the ledger before each
+// admit, so it tracks the snapshot reverts and primed state used by the test
+// backend. It must not be called on a production gateway.
+func (g *Gateway) UseTestNonceReconcile() {
+	if ng, ok := g.nonceGate.(*nonceGate); ok {
+		g.nonceGate = reconcilingGate{ng}
+	}
 }
 
 // Start initializes the worker pool to process transactions from the queue

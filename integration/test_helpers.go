@@ -173,6 +173,8 @@ func defaultHandlerChain(t *testing.T, ctx context.Context, cfg config.Config, e
 	if err != nil {
 		t.Fatalf("build gateway: %v", err)
 	}
+	// Tests prime and revert ledger state out of band; track it before each admit.
+	gw.UseTestNonceReconcile()
 
 	handlers := make([]blocks.BlockHandler, 0, len(dbs)+2)
 	for _, db := range dbs {

@@ -226,7 +226,8 @@ func TestNonceGate_ReconcilesStaleCache(t *testing.T) {
 	from := senderAddr(key)
 	state := newStubState()
 	state.set(from, 5)
-	gate, q := newTestGate(state)
+	plain, q := newTestGate(state)
+	gate := reconcilingGate{plain}
 
 	require.NoError(t, gate.Admit(context.Background(), newValidTx(t, key, validTxOpts{nonce: 5})))
 	require.Equal(t, []uint64{5}, q.nonces())
@@ -234,8 +235,8 @@ func TestNonceGate_ReconcilesStaleCache(t *testing.T) {
 	// The ledger advances by a path the gate did not observe.
 	state.set(from, 8)
 
-	// Nonce 8 looks like a gap against the stale cache, but reconcile picks up
-	// the real committed nonce and admits it.
+	// A nonce ahead of the stale cache still admits: the re-read picks up the
+	// real committed nonce.
 	require.NoError(t, gate.Admit(context.Background(), newValidTx(t, key, validTxOpts{nonce: 8})))
 	require.Equal(t, []uint64{5, 8}, q.nonces())
 }
@@ -245,7 +246,8 @@ func TestNonceGate_ReconcilesAfterRevert(t *testing.T) {
 	from := senderAddr(key)
 	state := newStubState()
 	state.set(from, 5)
-	gate, q := newTestGate(state)
+	plain, q := newTestGate(state)
+	gate := reconcilingGate{plain}
 
 	require.NoError(t, gate.Admit(context.Background(), newValidTx(t, key, validTxOpts{nonce: 5})))
 	require.Equal(t, []uint64{5}, q.nonces())
@@ -253,8 +255,8 @@ func TestNonceGate_ReconcilesAfterRevert(t *testing.T) {
 	// A snapshot revert moves the ledger nonce back below the cache.
 	state.set(from, 2)
 
-	// Nonce 2 is below the stale cache (5), but reconcile re-syncs down and
-	// admits it instead of rejecting it as too low.
+	// A nonce below the stale cache still admits: the re-read follows the revert
+	// down instead of rejecting it as too low.
 	require.NoError(t, gate.Admit(context.Background(), newValidTx(t, key, validTxOpts{nonce: 2})))
 	require.Equal(t, []uint64{5, 2}, q.nonces())
 }
@@ -288,4 +290,39 @@ func TestNonceGate_SeedErrorPropagates(t *testing.T) {
 
 	err := gate.Admit(context.Background(), newValidTx(t, key, validTxOpts{nonce: 5}))
 	require.ErrorIs(t, err, state.err)
+}
+
+func TestNonceGate_ObservePersistsUnknownSender(t *testing.T) {
+	key := newKey(t)
+	state := newStubState()
+	gate, q := newTestGate(state)
+
+	// A commit arrives for a sender the gate never admitted.
+	gate.Observe(committedBlock(t, key, 5))
+
+	// The next in-order tx is admitted from the cache, with no state read.
+	require.NoError(t, gate.Admit(context.Background(), newValidTx(t, key, validTxOpts{nonce: 6})))
+	require.Equal(t, []uint64{6}, q.nonces())
+	require.Equal(t, 0, state.readCount())
+}
+
+func TestNonceGate_ObserveSkipsInvalidTx(t *testing.T) {
+	key := newKey(t)
+	from := senderAddr(key)
+	state := newStubState()
+	state.set(from, 5)
+	gate, q := newTestGate(state)
+
+	require.NoError(t, gate.Admit(context.Background(), newValidTx(t, key, validTxOpts{nonce: 5})))
+	tx6 := newValidTx(t, key, validTxOpts{nonce: 6})
+	require.NoError(t, gate.Admit(context.Background(), tx6))
+	require.Equal(t, []uint64{5}, q.nonces())
+
+	// An invalidated commit must not advance the sender's nonce.
+	block := committedBlock(t, key, 5)
+	block[0].FabricTxStatus = 1
+	gate.Observe(block)
+
+	require.Equal(t, []uint64{5}, q.nonces())
+	require.Equal(t, tx6.Hash(), gate.IsPending(tx6.Hash()).Hash())
 }

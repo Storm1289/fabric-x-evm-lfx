@@ -173,6 +173,10 @@ func buildApp(ctx context.Context, cfg config.Config, gwSigner sdk.Signer, logge
 	if err != nil {
 		return nil, err
 	}
+	if enableTestRPC {
+		// The test RPC's snapshot reverts move the ledger nonce out of band.
+		gateway.UseTestNonceReconcile()
+	}
 
 	// Chain must be called before gateway, to persist blocks before marking transactions complete.
 	handlers := append(extraHandlers, chain, gateway)
