@@ -136,7 +136,7 @@ func (g *nonceGate) Admit(ctx context.Context, tx *types.Transaction) error {
 	}
 	if replacing {
 		// Overwriting an existing parked tx at this nonce. Ethereum replacement has
-		// its own fee-bump rules; until then we log and overwrite.
+		// its own fee-bump rules, tracked in #62; until then we log and overwrite.
 		logger.Infof("nonce gate: replacing parked tx for %s at nonce %d", from, tx.Nonce())
 	}
 	g.park(ss, tx)
