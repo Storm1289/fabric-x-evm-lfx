@@ -86,12 +86,20 @@ func newTestGate(state stateReader) (*nonceGate, *enqueueRecorder) {
 	return newNonceGate(state, signer, q), q
 }
 
+// reconcileAdmit mimics the test backend's reconciling gate: resync then admit.
+func reconcileAdmit(g *nonceGate, tx *types.Transaction) error {
+	if err := g.Resync(context.Background(), tx); err != nil {
+		return err
+	}
+	return g.Admit(context.Background(), tx)
+}
+
 func senderAddr(key *ecdsa.PrivateKey) common.Address {
 	return crypto.PubkeyToAddress(key.PublicKey)
 }
 
 // committedBlock builds the committed-transaction slice Observe expects, carrying
-// the sender and the raw tx (Observe reads the nonce from it).
+// the sender and the raw tx that Observe reads the nonce from.
 func committedBlock(t *testing.T, key *ecdsa.PrivateKey, nonces ...uint64) []domain.Transaction {
 	t.Helper()
 	from := senderAddr(key)
@@ -227,9 +235,8 @@ func TestNonceGate_ReconcilesStaleCache(t *testing.T) {
 	state := newStubState()
 	state.set(from, 5)
 	plain, q := newTestGate(state)
-	gate := reconcilingGate{plain}
 
-	require.NoError(t, gate.Admit(context.Background(), newValidTx(t, key, validTxOpts{nonce: 5})))
+	require.NoError(t, reconcileAdmit(plain, newValidTx(t, key, validTxOpts{nonce: 5})))
 	require.Equal(t, []uint64{5}, q.nonces())
 
 	// The ledger advances by a path the gate did not observe.
@@ -237,7 +244,7 @@ func TestNonceGate_ReconcilesStaleCache(t *testing.T) {
 
 	// A nonce ahead of the stale cache still admits: the re-read picks up the
 	// real committed nonce.
-	require.NoError(t, gate.Admit(context.Background(), newValidTx(t, key, validTxOpts{nonce: 8})))
+	require.NoError(t, reconcileAdmit(plain, newValidTx(t, key, validTxOpts{nonce: 8})))
 	require.Equal(t, []uint64{5, 8}, q.nonces())
 }
 
@@ -247,9 +254,8 @@ func TestNonceGate_ReconcilesAfterRevert(t *testing.T) {
 	state := newStubState()
 	state.set(from, 5)
 	plain, q := newTestGate(state)
-	gate := reconcilingGate{plain}
 
-	require.NoError(t, gate.Admit(context.Background(), newValidTx(t, key, validTxOpts{nonce: 5})))
+	require.NoError(t, reconcileAdmit(plain, newValidTx(t, key, validTxOpts{nonce: 5})))
 	require.Equal(t, []uint64{5}, q.nonces())
 
 	// A snapshot revert moves the ledger nonce back below the cache.
@@ -257,7 +263,7 @@ func TestNonceGate_ReconcilesAfterRevert(t *testing.T) {
 
 	// A nonce below the stale cache still admits: the re-read follows the revert
 	// down instead of rejecting it as too low.
-	require.NoError(t, gate.Admit(context.Background(), newValidTx(t, key, validTxOpts{nonce: 2})))
+	require.NoError(t, reconcileAdmit(plain, newValidTx(t, key, validTxOpts{nonce: 2})))
 	require.Equal(t, []uint64{5, 2}, q.nonces())
 }
 

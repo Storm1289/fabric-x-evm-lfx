@@ -81,7 +81,8 @@ type Gateway struct {
 	ChainConfig     *params.ChainConfig
 	Signer          types.Signer
 	TxQueue         TxQueueInterface
-	nonceGate       nonceSequencer
+	nonceGate       NonceSequencer
+	wrapNonce       func(ResyncingSequencer) NonceSequencer // test-only gate wrapper
 	workerCount     int
 	wg              sync.WaitGroup
 	stopOnce        sync.Once
@@ -107,7 +108,7 @@ type Store interface {
 // If txQueue is nil, NewTxQueue() will be used as the default.
 // batchSubmitter handles all endorsement submissions and is owned by the Gateway.
 // endorsementChan is the channel to send endorsements to the BatchSubmitter.
-func New(ec *EndorsementClient, batchSubmitter *BatchSubmitter, store Store, chainID int64, workerCount int, txQueue TxQueueInterface, endorsementChan chan EndorsedTx) (*Gateway, error) {
+func New(ec *EndorsementClient, batchSubmitter *BatchSubmitter, store Store, chainID int64, workerCount int, txQueue TxQueueInterface, endorsementChan chan EndorsedTx, opts ...Option) (*Gateway, error) {
 	if workerCount <= 0 {
 		workerCount = 1
 	}
@@ -129,19 +130,28 @@ func New(ec *EndorsementClient, batchSubmitter *BatchSubmitter, store Store, cha
 		workerCount:     workerCount,
 		endorsementChan: endorsementChan,
 	}
+	for _, opt := range opts {
+		opt(g)
+	}
 	// Park future-nonce transactions and release them in nonce order as earlier
-	// nonces commit.
-	g.nonceGate = newNonceGate(g, g.Signer, g.TxQueue)
+	// nonces commit. A test-only wrapper may reconcile before admitting.
+	gate := newNonceGate(g, g.Signer, g.TxQueue)
+	if g.wrapNonce != nil {
+		g.nonceGate = g.wrapNonce(gate)
+	} else {
+		g.nonceGate = gate
+	}
 	return g, nil
 }
 
-// UseTestNonceReconcile makes the nonce gate re-read the ledger before each
-// admit, so it tracks the snapshot reverts and primed state used by the test
-// backend. It must not be called on a production gateway.
-func (g *Gateway) UseTestNonceReconcile() {
-	if ng, ok := g.nonceGate.(*nonceGate); ok {
-		g.nonceGate = reconcilingGate{ng}
-	}
+// Option configures a Gateway at construction.
+type Option func(*Gateway)
+
+// WithNonceSequencer wraps the nonce gate at construction. The wrapper receives
+// the plain gate and returns the sequencer to use; the test backend supplies its
+// reconciling gate this way.
+func WithNonceSequencer(wrap func(ResyncingSequencer) NonceSequencer) Option {
+	return func(g *Gateway) { g.wrapNonce = wrap }
 }
 
 // Start initializes the worker pool to process transactions from the queue

@@ -34,11 +34,18 @@ type enqueuer interface {
 	Enqueue(tx *types.Transaction)
 }
 
-// nonceSequencer gates a sender's transactions by nonce.
-type nonceSequencer interface {
+// NonceSequencer gates a sender's transactions by nonce.
+type NonceSequencer interface {
 	Admit(ctx context.Context, tx *types.Transaction) error
 	Observe(committed []domain.Transaction)
 	IsPending(hash common.Hash) *types.Transaction
+}
+
+// ResyncingSequencer is a NonceSequencer that can re-read a sender's committed
+// nonce from state. The test backend wraps it to follow out-of-band changes.
+type ResyncingSequencer interface {
+	NonceSequencer
+	Resync(ctx context.Context, tx *types.Transaction) error
 }
 
 // nonceGate enqueues each sender's next expected nonce, parks higher ones until
@@ -50,6 +57,7 @@ type nonceGate struct {
 	queue  enqueuer
 
 	senders map[common.Address]*senderState
+	byHash  map[common.Hash]*types.Transaction // parked txs indexed by hash
 
 	maxPerSender int
 	maxSenders   int
@@ -75,6 +83,7 @@ func newNonceGate(state stateReader, signer types.Signer, queue enqueuer) *nonce
 		signer:       signer,
 		queue:        queue,
 		senders:      make(map[common.Address]*senderState),
+		byHash:       make(map[common.Hash]*types.Transaction),
 		maxPerSender: defaultMaxParkedPerSender,
 		maxSenders:   defaultMaxSenders,
 		ttl:          defaultParkedTTL,
@@ -90,24 +99,26 @@ func (g *nonceGate) Admit(ctx context.Context, tx *types.Transaction) error {
 	}
 
 	g.mu.Lock()
-	defer g.mu.Unlock()
-
+	// Steady state: the sender is cached and we never touch the store. On a miss,
+	// release the lock for the slow seed, then re-acquire and recheck - an Observe
+	// may have created the sender while we were unlocked.
 	ss := g.senders[from]
-	seeded := false
 	if ss == nil {
-		// First sight: seed the nonce from state.
+		g.mu.Unlock()
 		seed, err := g.state.NonceAt(ctx, from, nil)
 		if err != nil {
 			return fmt.Errorf("look up nonce: %w", err)
 		}
-		ss = &senderState{next: seed, parked: make(map[uint64]parkedTx)}
-		g.senders[from] = ss
-		seeded = true
+		g.mu.Lock()
+		if ss = g.senders[from]; ss == nil {
+			g.evictLRU() // evict before insert so we never drop the new entry
+			ss = &senderState{next: seed, parked: make(map[uint64]parkedTx)}
+			g.senders[from] = ss
+		}
 	}
+	defer g.mu.Unlock()
+
 	ss.lastSeen = g.now()
-	if seeded {
-		g.evictLRU()
-	}
 
 	switch {
 	case tx.Nonce() < ss.next:
@@ -118,16 +129,23 @@ func (g *nonceGate) Admit(ctx context.Context, tx *types.Transaction) error {
 	}
 
 	// Future nonce: park until the gap fills.
-	ss.evictExpired(g.now(), g.ttl)
-	if _, replacing := ss.parked[tx.Nonce()]; !replacing && len(ss.parked) >= g.maxPerSender {
+	g.evictExpiredParked(ss)
+	_, replacing := ss.parked[tx.Nonce()]
+	if !replacing && len(ss.parked) >= g.maxPerSender {
 		return errTooManyParked
 	}
-	ss.parked[tx.Nonce()] = parkedTx{tx: tx, parkedAt: g.now()}
+	if replacing {
+		// Overwriting an existing parked tx at this nonce. Ethereum replacement has
+		// its own fee-bump rules; until then we log and overwrite.
+		logger.Infof("nonce gate: replacing parked tx for %s at nonce %d", from, tx.Nonce())
+	}
+	g.park(ss, tx)
 	return nil
 }
 
-// resync updates the cache to the sender's committed nonce.
-func (g *nonceGate) resync(ctx context.Context, tx *types.Transaction) error {
+// Resync updates the cache to the sender's committed nonce and drops any parked
+// tx that is now too low.
+func (g *nonceGate) Resync(ctx context.Context, tx *types.Transaction) error {
 	from, err := types.Sender(g.signer, tx)
 	if err != nil {
 		return fmt.Errorf("recover sender: %w", err)
@@ -146,20 +164,12 @@ func (g *nonceGate) resync(ctx context.Context, tx *types.Transaction) error {
 	}
 	ss.next = committed
 	ss.lastSeen = g.now()
-	return nil
-}
-
-// reconcilingGate re-reads the ledger nonce before each admit, following the
-// out-of-band nonce changes (reverts, primed state) that only the test backend makes.
-type reconcilingGate struct {
-	*nonceGate
-}
-
-func (g reconcilingGate) Admit(ctx context.Context, tx *types.Transaction) error {
-	if err := g.nonceGate.resync(ctx, tx); err != nil {
-		return err
+	for nonce := range ss.parked {
+		if nonce < ss.next {
+			g.unpark(ss, nonce)
+		}
 	}
-	return g.nonceGate.Admit(ctx, tx)
+	return nil
 }
 
 // Observe advances each sender's cached nonce from the block and releases any
@@ -198,12 +208,11 @@ func (g *nonceGate) Observe(committed []domain.Transaction) {
 		ss.lastSeen = now
 		for nonce := range ss.parked {
 			if nonce < ss.next {
-				delete(ss.parked, nonce)
+				g.unpark(ss, nonce)
 			}
 		}
-		if p, ok := ss.parked[ss.next]; ok {
-			delete(ss.parked, ss.next)
-			g.queue.Enqueue(p.tx)
+		if tx := g.unpark(ss, ss.next); tx != nil {
+			g.queue.Enqueue(tx)
 		}
 	}
 	g.evictLRU()
@@ -213,15 +222,38 @@ func (g *nonceGate) Observe(committed []domain.Transaction) {
 func (g *nonceGate) IsPending(hash common.Hash) *types.Transaction {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
+	return g.byHash[hash]
+}
 
-	for _, ss := range g.senders {
-		for _, p := range ss.parked {
-			if p.tx.Hash() == hash {
-				return p.tx
-			}
+// park adds tx to the sender's parked set and the by-hash index. Caller holds g.mu.
+func (g *nonceGate) park(ss *senderState, tx *types.Transaction) {
+	if old, ok := ss.parked[tx.Nonce()]; ok {
+		delete(g.byHash, old.tx.Hash())
+	}
+	ss.parked[tx.Nonce()] = parkedTx{tx: tx, parkedAt: g.now()}
+	g.byHash[tx.Hash()] = tx
+}
+
+// unpark removes any parked tx at nonce and returns it, or nil. Caller holds g.mu.
+func (g *nonceGate) unpark(ss *senderState, nonce uint64) *types.Transaction {
+	p, ok := ss.parked[nonce]
+	if !ok {
+		return nil
+	}
+	delete(ss.parked, nonce)
+	delete(g.byHash, p.tx.Hash())
+	return p.tx
+}
+
+// evictExpiredParked drops parked txs whose gap never filled within the TTL. Caller holds g.mu.
+func (g *nonceGate) evictExpiredParked(ss *senderState) {
+	now := g.now()
+	for nonce, p := range ss.parked {
+		if now.Sub(p.parkedAt) > g.ttl {
+			delete(ss.parked, nonce)
+			delete(g.byHash, p.tx.Hash())
 		}
 	}
-	return nil
 }
 
 // evictLRU drops least-recently-seen senders with no parked txs while over the cap.
@@ -242,14 +274,5 @@ func (g *nonceGate) evictLRU() {
 			return
 		}
 		delete(g.senders, oldest)
-	}
-}
-
-// evictExpired drops parked transactions whose gap never filled within the TTL.
-func (ss *senderState) evictExpired(now time.Time, ttl time.Duration) {
-	for nonce, p := range ss.parked {
-		if now.Sub(p.parkedAt) > ttl {
-			delete(ss.parked, nonce)
-		}
 	}
 }
