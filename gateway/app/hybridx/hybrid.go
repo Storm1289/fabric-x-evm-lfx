@@ -6,19 +6,42 @@ SPDX-License-Identifier: LGPL-3.0-or-later
 
 // Package hybridx implements the two-phase startup strategy for fabric-x nodes.
 //
-// On startup both the delivery service and the notification service are started
-// concurrently.  The notification service tracks the latest committed block it
-// has seen (nNot).  The delivery service processes blocks and exposes its last
-// processed block via nDel.  The switch from delivery to notification is decided
-// inside the notification gate itself, in a single HandleBatch call, eliminating
-// any gap between the two phases:
+// On startup both services run concurrently.  Delivery replays history from the
+// store's height; notification receives a batch per committed block in real time
+// but stays inert until it can take over.  Ownership of a block is decided by a
+// single compare-and-swap, so exactly one path ever dispatches it, and the two
+// never run the handler chain at the same time.  Two integers carry the protocol:
 //
-//  1. The gate receives a batch for block B and updates nNot = B.
-//  2. If nDel >= nNot it atomically flips switched and forwards the batch.
-//  3. If nDel < nNot it discards the batch content (delivery is still behind).
+//   - claimed is the highest block claimed by either path.  A path takes block B
+//     by moving claimed from B-1 to B with a compare-and-swap, so exactly one of
+//     them can win B.
+//   - dispatched is the highest block delivery has finished dispatching.  Only
+//     delivery writes it, and only once its whole handler chain has returned.
 //
-// Because the decision and the first forward happen in the same HandleBatch call
-// there is no window in which a batch could be lost.
+// Delivery, per block B: drop it if disabled; else compare-and-swap claimed from
+// B-1 to B.  On failure notification has taken over, so disable delivery for good
+// and drop the block.  On success dispatch B, then publish dispatched = B.
+//
+// Notification, per batch for block B: if already switched, dispatch.  Otherwise
+// compare-and-swap claimed from B-1 to B; on failure drop the batch and retry on
+// the next one.  On success wait for dispatched to reach B-1 — until delivery has
+// finished the block before ours — then stop delivery, flip switched, and dispatch
+// B and every batch after it.
+//
+// Delivery learns it lost only when it attempts its next block, which it does
+// between dispatches, so it is never interrupted mid-block.  The wait on
+// dispatched is what keeps the two paths from overlapping.
+//
+// Seeding: claimed and dispatched start at math.MinInt64, a sentinel that no real
+// block number can produce (real values are ≥ -1).  On its very first Handle call
+// deliveryShim atomically installs b.Number-1 into both, establishing the real
+// base that all subsequent CAS operations build on.  Notification batches that
+// arrive before that moment always lose their CAS (MinInt64 ≠ b.Number-1 for any
+// real b) and are silently dropped — which is correct, since notification is lossy
+// and must not win any block until delivery has proven it can receive from the peer.
+//
+// Failures are fatal by design: a block that cannot be applied leaves a hole in
+// the store that neither path will ever fill.
 //
 // HybridSynchronizer satisfies the app.Synchronizer interface (Start + Ready)
 // and plugs directly into NewGatewaySynchronizer as the fabric-x implementation.
@@ -27,6 +50,7 @@ package hybridx
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync/atomic"
 	"time"
 
@@ -39,12 +63,16 @@ import (
 	evmcommon "github.com/hyperledger/fabric-x-evm/common"
 )
 
+// deliveryWaitPoll is how often the notification path re-reads dispatched while
+// waiting for delivery to finish the block before its own.  That wait happens
+// once per process and spans a single block's dispatch, so it can be short.
+const deliveryWaitPoll = time.Millisecond
+
 // deliverySyncer is the subset of *network.Synchronizer used by HybridSynchronizer.
 // Extracted as an interface so tests can supply a fake without a real gRPC connection.
 type deliverySyncer interface {
 	Start(ctx context.Context) error
 	Ready() error
-	BlockHeight(ctx context.Context) (uint64, error)
 }
 
 // HybridSynchronizer implements the two-phase startup strategy described in
@@ -57,6 +85,14 @@ type HybridSynchronizer struct {
 	delivery  deliverySyncer
 	notifPeer notification.AllTxPeer
 	notifReq  *notification.StreamAllRequest
+
+	// claimed is the highest block claimed by either path; both take a block by
+	// compare-and-swapping it from B-1 to B.  dispatched is the highest block
+	// delivery has finished dispatching, written by delivery only, after its whole
+	// handler chain has returned.  Both are seeded before Start launches either
+	// service, so no notification batch can win a CAS against the zero value.
+	claimed    atomic.Int64
+	dispatched atomic.Int64
 }
 
 // New constructs a HybridSynchronizer.
@@ -95,24 +131,6 @@ func New(
 	return h, nil
 }
 
-// newWithDeps constructs a HybridSynchronizer from pre-built dependencies.
-// Used by tests to inject fakes without needing a real gRPC connection.
-func newWithDeps(
-	delivery deliverySyncer,
-	notifPeer notification.AllTxPeer,
-	notifReq *notification.StreamAllRequest,
-	logger sdk.Logger,
-	handlers ...blocks.BlockHandler,
-) *HybridSynchronizer {
-	return &HybridSynchronizer{
-		logger:    logger,
-		handlers:  append([]blocks.BlockHandler(nil), handlers...),
-		delivery:  delivery,
-		notifPeer: notifPeer,
-		notifReq:  notifReq,
-	}
-}
-
 // dispatch calls Handle on every handler in the chain.
 // Called by both the deliveryShim and the notifGate.
 func (h *HybridSynchronizer) dispatch(ctx context.Context, b blocks.Block) error {
@@ -127,25 +145,27 @@ func (h *HybridSynchronizer) dispatch(ctx context.Context, b blocks.Block) error
 // Start runs the two-phase startup and then blocks until ctx is cancelled.
 //
 // Both services start concurrently.  A notifGate sits between the streamer and
-// the handler chain.  It owns nDel (written by a delivery-watcher goroutine
-// after each Ready() transition) and nNot (written on every incoming batch).
-// The switch is decided inside HandleBatch — atomically with forwarding the first
-// live batch — so no gap can arise between the two phases.
+// the handler chain and performs the handoff described in the package doc.
 func (h *HybridSynchronizer) Start(ctx context.Context) error {
-	// switched flips 0→1 exactly once, inside HandleBatch, when nDel >= nNot.
-	var switched atomic.Uint32
+	// claimed and dispatched start at math.MinInt64 (set on HybridSynchronizer
+	// construction).  deliveryShim installs the real seed on its first Handle
+	// call, so notification cannot win any CAS until delivery has proven it can
+	// receive from the peer.
+	h.claimed.Store(math.MinInt64)
+	h.dispatched.Store(math.MinInt64)
 
-	// nDel is the last block number processed by the delivery synchronizer.
-	// Written by the delivery-watcher goroutine; read by the notif gate.
-	var nDel atomic.Uint64
+	deliveryCtx, deliveryCancel := context.WithCancel(ctx)
+	defer deliveryCancel()
 
 	// ── Notification service ────────────────────────────────────────────────
 	gate := &notifGate{
-		nDel:       &nDel,
-		switched:   &switched,
 		hybrid:     h,
 		dispatcher: evmcommon.NewAllTxBatchDispatcher(&hybridAdapter{h: h}),
 		logger:     h.logger,
+		// Safe to call only once the gate has seen dispatched reach the block
+		// before its own: this ctx reaches the store's BeginTx, so cancelling
+		// mid-dispatch would abort that block.
+		stopDelivery: deliveryCancel,
 	}
 	streamer := notification.NewAllTxStreamer(h.notifPeer, []notification.AllTxHandler{gate}, h.logger)
 
@@ -170,58 +190,12 @@ func (h *HybridSynchronizer) Start(ctx context.Context) error {
 	}()
 
 	// ── Delivery service ────────────────────────────────────────────────────
-	deliveryCtx, deliveryCancel := context.WithCancel(ctx)
-	defer deliveryCancel()
-
-	deliveryDone := make(chan struct{})
 	go func() {
 		defer func() {
 			h.delivery = nil // allow GC of the peer and all delivery resources
-			close(deliveryDone)
 		}()
 		if err := h.delivery.Start(deliveryCtx); err != nil && deliveryCtx.Err() == nil {
 			h.logger.Warnf("hybridx: delivery error: %v", err)
-		}
-	}()
-
-	// Delivery-watcher: once the delivery synchronizer reaches Ready, poll its
-	// BlockHeight to keep nDel current so the gate can compare accurately.
-	// When the gate has already switched we cancel the delivery synchronizer.
-	go func() {
-		// Wait for the delivery synchronizer to reach Ready.
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-deliveryDone:
-				return
-			case <-time.After(100 * time.Millisecond):
-			}
-			if h.delivery != nil && h.delivery.Ready() == nil {
-				break
-			}
-		}
-
-		// Keep nDel updated until the gate has switched.
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-deliveryDone:
-				return
-			case <-time.After(100 * time.Millisecond):
-			}
-			if switched.Load() == 1 {
-				deliveryCancel()
-				return
-			}
-			if h.delivery == nil {
-				return
-			}
-			height, err := h.delivery.BlockHeight(ctx)
-			if err == nil && height > 0 {
-				nDel.Store(height - 1) // BlockHeight = last+1, so last = height-1
-			}
 		}
 	}()
 
@@ -243,27 +217,83 @@ func (h *HybridSynchronizer) Ready() error {
 }
 
 // deliveryShim is a blocks.BlockHandler registered with the delivery synchronizer.
-// It delegates to h.dispatch so that the live handler chain (including any
-// handlers added or removed via AddHandler/RemoveHandler) is always used.
-type deliveryShim struct{ h *HybridSynchronizer }
-
-func (s *deliveryShim) Handle(ctx context.Context, b blocks.Block) error {
-	return s.h.dispatch(ctx, b)
+// It claims each block before dispatching and publishes completion after, per the
+// delivery half of the protocol in the package doc.  It delegates to h.dispatch so
+// that the live handler chain (including any handlers added or removed via
+// AddHandler/RemoveHandler) is always used.
+//
+// off and seeded need no synchronisation: the delivery synchronizer calls
+// Handle sequentially from a single goroutine.
+type deliveryShim struct {
+	h      *HybridSynchronizer
+	off    bool
+	seeded bool // true once the first Handle call has installed the real seed
 }
 
-// notifGate is a notification.AllTxHandler that gates the handler chain.
+func (s *deliveryShim) Handle(ctx context.Context, b blocks.Block) error {
+	if s.off {
+		return nil // notification has taken over; this block is not ours
+	}
+
+	n := int64(b.Number)
+
+	// First call: atomically replace the MinInt64 sentinel with the real seed
+	// (b.Number - 1).  Notification batches that arrived before this point all
+	// lost their CAS against MinInt64 and were dropped, which is correct —
+	// notification is lossy and must never win before delivery is established.
+	// If the CAS fails here, notification somehow won against MinInt64, which
+	// is a bug; the panic surfaces it rather than silently misbehaving.
+	if !s.seeded {
+		s.seeded = true
+		if !s.h.claimed.CompareAndSwap(math.MinInt64, n-1) {
+			panic(fmt.Errorf(
+				"hybridx: claimed was not MinInt64 on delivery's first block %d — "+
+					"notification must not win before delivery is seeded", b.Number))
+		}
+		s.h.dispatched.Store(n - 1)
+		s.h.logger.Infof("hybridx: delivery seeded at block %d (claimed=%d)", b.Number, n-1)
+	}
+
+	if !s.h.claimed.CompareAndSwap(n-1, n) {
+		// Notification claimed this block first.  Delivery is done for good: it can
+		// only ever offer blocks notification already owns.
+		s.off = true
+		s.h.logger.Infof("hybridx: notification claimed block %d first; delivery disabled", b.Number)
+		return nil
+	}
+
+	if err := s.h.dispatch(ctx, b); err != nil {
+		// graceful shutdown
+		if ctx.Err() != nil {
+			return err
+		}
+
+		// Fatal by design: the claim is not released, so nothing else will ever
+		// apply this block and carrying on would leave a permanent hole in the
+		// store.  Re-requesting it would almost certainly fail the same way unless
+		// the cause was transient I/O.
+		// TODO: classify transient store failures so they can be retried in place
+		// instead of taking the process down.
+		panic(fmt.Errorf("hybridx: delivery handler chain failed on block %d: %w", b.Number, err))
+	}
+
+	// Published only after every handler returned, so a reader seeing n knows
+	// block n is fully applied.
+	s.h.dispatched.Store(n)
+	return nil
+}
+
+// notifGate is a notification.AllTxHandler that gates the handler chain,
+// performing the notification half of the protocol in the package doc.
 //
-// For each incoming batch it:
-//  1. If switched: converts the batch to a blocks.Block and dispatches it.
-//  2. If not switched but nDel >= batch.BlockNumber: flips switched and dispatches
-//     — this is the gap-free handoff point.
-//  3. Otherwise: discards the batch (delivery is still behind).
+// switched needs no synchronisation: AllTxStreamer calls HandleBatch
+// sequentially from the single notification goroutine started in Start.
 type notifGate struct {
-	nDel       *atomic.Uint64
-	switched   *atomic.Uint32
-	hybrid     *HybridSynchronizer
-	dispatcher *evmcommon.AllTxBatchDispatcher
-	logger     sdk.Logger
+	hybrid       *HybridSynchronizer
+	dispatcher   *evmcommon.AllTxBatchDispatcher
+	logger       sdk.Logger
+	stopDelivery func()
+	switched     bool
 }
 
 // hybridAdapter adapts HybridSynchronizer.dispatch to evmcommon.BlockHandler.
@@ -274,23 +304,89 @@ func (a *hybridAdapter) Handle(ctx context.Context, b blocks.Block) error {
 }
 
 func (g *notifGate) HandleBatch(ctx context.Context, batch notification.AllTxBatch) error {
-	if g.switched.Load() == 1 {
+	if g.switched {
 		return g.dispatchBatch(ctx, batch)
 	}
 
-	// Check whether delivery has caught up with this batch's block number.
-	if g.nDel.Load() >= batch.BlockNumber {
-		g.switched.Store(1)
-		g.logger.Infof("hybridx: switching to notification at block %d", batch.BlockNumber)
-		return g.dispatchBatch(ctx, batch)
+	// Take this block only if delivery is sitting exactly one behind it, and only
+	// if we win the race for it: on failure delivery got there first, so drop the
+	// batch and try again on the next one.
+	n := int64(batch.BlockNumber)
+	if !g.hybrid.claimed.CompareAndSwap(n-1, n) {
+		return nil
 	}
 
-	return nil // delivery is still behind; discard
+	// We own block n, but delivery may still be finishing n-1 and must not be
+	// interrupted.  Wait for it to publish completion before touching the handler
+	// chain — this is what keeps the two paths from ever overlapping.
+	if err := g.waitForDelivery(ctx, n-1); err != nil {
+		return err // shutting down
+	}
+
+	// Delivery is now idle between blocks and cannot claim n, so cancelling it
+	// here cannot abort a dispatch mid-flight.
+	g.stopDelivery()
+	g.switched = true
+	g.logger.Infof("hybridx: switching to notification at block %d", batch.BlockNumber)
+	return g.dispatchBatch(ctx, batch)
+}
+
+// waitForDelivery blocks until delivery has finished dispatching block upTo, or
+// until ctx is done.  Returns immediately in the common case: either delivery has
+// just published upTo, or upTo predates this process and the seed covered it.
+func (g *notifGate) waitForDelivery(ctx context.Context, upTo int64) error {
+	if g.deliveryReached(upTo) {
+		return nil
+	}
+	g.logger.Infof("hybridx: waiting for delivery to finish block %d before taking over", upTo)
+
+	ticker := time.NewTicker(deliveryWaitPoll)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if g.deliveryReached(upTo) {
+				return nil
+			}
+		}
+	}
+}
+
+// deliveryReached reports whether delivery has finished exactly block upTo.
+//
+// dispatched can only ever reach upTo, never pass it: the caller won the claim on
+// upTo+1, so delivery cannot have won that block, and its next attempt is the
+// compare-and-swap that disables it.  Overshooting therefore means the claim
+// protocol itself is broken — surfaced here rather than papered over with a >=.
+func (g *notifGate) deliveryReached(upTo int64) bool {
+	d := g.hybrid.dispatched.Load()
+	if d > upTo {
+		panic(fmt.Errorf(
+			"hybridx: programming error: delivery dispatched block %d while notification owns block %d",
+			d, upTo+1))
+	}
+	return d == upTo
 }
 
 // dispatchBatch converts an AllTxBatch to a blocks.Block via AllTxBatchDispatcher
 // and dispatches it through the hybrid's handler chain.
 // The dispatcher is allocated once per gate in Start and stored here.
 func (g *notifGate) dispatchBatch(ctx context.Context, batch notification.AllTxBatch) error {
-	return g.dispatcher.HandleBatch(ctx, batch)
+	if err := g.dispatcher.HandleBatch(ctx, batch); err != nil {
+		// graceful shutdown
+		if ctx.Err() != nil {
+			return err
+		}
+
+		// Fatal by design, and unrecoverable in place: the notification stream has
+		// no historical replay, so a block dropped here can never be re-fetched —
+		// only a restart, which brings delivery back, can repair the store.
+		// AllTxBatchDispatcher already panics on a handler error; this covers
+		// anything else it can return.
+		// TODO: revisit once the stream can be resumed from a past block.
+		panic(fmt.Errorf("hybridx: notification dispatch failed on block %d: %w", batch.BlockNumber, err))
+	}
+	return nil
 }
