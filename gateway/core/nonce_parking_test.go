@@ -108,7 +108,7 @@ func committedBlock(t *testing.T, key *ecdsa.PrivateKey, nonces ...uint64) []dom
 		tx := newValidTx(t, key, validTxOpts{nonce: n})
 		raw, err := tx.MarshalBinary()
 		require.NoError(t, err)
-		out[i] = domain.Transaction{FromAddress: from.Bytes(), RawTx: raw}
+		out[i] = domain.Transaction{FromAddress: from.Bytes(), RawTx: raw, FabricValid: true}
 	}
 	return out
 }
@@ -326,9 +326,31 @@ func TestNonceGate_ObserveSkipsInvalidTx(t *testing.T) {
 
 	// An invalidated commit must not advance the sender's nonce.
 	block := committedBlock(t, key, 5)
-	block[0].FabricTxStatus = 1
+	block[0].FabricValid = false
 	gate.Observe(block)
 
 	require.Equal(t, []uint64{5}, q.nonces())
 	require.Equal(t, tx6.Hash(), gate.IsPending(tx6.Hash()).Hash())
+}
+
+func TestNonceGate_ObserveAdvancesOnRevert(t *testing.T) {
+	key := newKey(t)
+	from := senderAddr(key)
+	state := newStubState()
+	state.set(from, 5)
+	gate, q := newTestGate(state)
+
+	require.NoError(t, gate.Admit(context.Background(), newValidTx(t, key, validTxOpts{nonce: 5})))
+	tx6 := newValidTx(t, key, validTxOpts{nonce: 6})
+	require.NoError(t, gate.Admit(context.Background(), tx6))
+	require.Equal(t, []uint64{5}, q.nonces())
+
+	// A revert consumes the nonce, so it must advance and release the next tx,
+	// even though its EVM status is 0.
+	block := committedBlock(t, key, 5)
+	block[0].Status = 0
+	gate.Observe(block)
+
+	require.Equal(t, []uint64{5, 6}, q.nonces())
+	require.Nil(t, gate.IsPending(tx6.Hash()))
 }

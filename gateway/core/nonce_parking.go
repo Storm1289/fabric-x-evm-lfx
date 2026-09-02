@@ -178,7 +178,7 @@ func (g *nonceGate) Observe(committed []domain.Transaction) {
 	// Highest valid nonce per sender.
 	highest := make(map[common.Address]uint64)
 	for i := range committed {
-		if committed[i].FabricTxStatus != 0 {
+		if !committed[i].FabricValid {
 			continue // invalidated: nonce not consumed
 		}
 		tx := committed[i].ToEthTx()
