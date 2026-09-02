@@ -93,9 +93,28 @@ A known `--suite` (`oz-hardhat` or `eth-tests`) already implies `--baseline`,
 `--results`, and `--format` — pass any of the three explicitly to override, e.g. against a scratch
 baseline or a single results file (see the worked examples below, which do exactly that).
 
-Prints a summary and exits non-zero if anything regressed:
-- a failure that isn't in the baseline (a real regression), or
-- a baseline entry that's no longer failing (stale — remove it).
+Prints a summary and exits non-zero only if there's a real regression: a failure that isn't in the
+baseline. Stale entries (a baseline entry that's no longer failing) are reported too, but never gate
+the exit code — "no longer failing" is ambiguous (could be a real fix, could just be a test that
+didn't run this time, e.g. an unrelated dropped-transaction bug taking out the rest of a describe
+block after a beforeEach hook fails) in a way a new failure isn't, so a PR unrelated to the flake
+shouldn't turn red over it. Clean up stale entries with `update` when you get a chance.
+
+A baseline entry can also be marked `"flaky": true`: it never gates (pass, fail, or absent this run
+all land in `Quarantined`, reported for visibility only), for a known nondeterministic failure rather
+than a clean incompatibility.
+
+For a race that can hit many (file, token, ...) combinations of the same test helper, listing one
+literal entry per combination as each is individually observed doesn't hold up — it's whack-a-mole
+against a random trigger, and the entries it's missing look identical to the ones it has until one of
+them regresses on an unrelated PR. Instead, an entry can carry `idPattern`/`messagePattern` (regexps,
+Go RE2 syntax) instead of a literal `id` — an unlisted failure matching *both* is quarantined under
+that entry rather than needing its own. `id` is still required on a pattern entry, but only as a human
+label; it's never looked up literally. Both patterns must be set together (matching on only one is too
+loose — a real new bug in the same file could get silently absorbed) and the entry must be `flaky`;
+`check`/`update` refuse to run against a baseline that breaks either rule, or whose regexp doesn't
+compile, rather than silently matching nothing. See the `Governor-family before-each-hook
+dropped-tx race` entry in `testdata/oz_known_failures.json` for a worked example.
 
 `--json` prints a machine-readable `Summary` instead (same counts, regressions, stale entries, and
 cause histogram, structured rather than prose) — for a caller building its own presentation, e.g. the

@@ -9,6 +9,7 @@ package common
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 
 	"github.com/hyperledger/fabric-lib-go/common/flogging"
@@ -67,7 +68,13 @@ func (d *AllTxBatchDispatcher) HandleBatch(ctx context.Context, batch notificati
 			continue
 		}
 
-		nsrws, events := namespacesToNsRWS(event.Namespaces)
+		nsrws, _ := namespacesToNsRWS(event.Namespaces)
+
+		// In fabric-x format, events are in Metadata[1] (not in BlindWrites).
+		var txEvents []byte
+		if len(event.Metadata) > 1 {
+			txEvents = event.Metadata[1]
+		}
 
 		txs = append(txs, blocks.Transaction{
 			ID:        event.TxID,
@@ -75,7 +82,7 @@ func (d *AllTxBatchDispatcher) HandleBatch(ctx context.Context, batch notificati
 			InputArgs: input.Args,
 			Valid:     event.Status == committerpb.Status_COMMITTED,
 			Status:    int(event.Status),
-			Events:    events,
+			Events:    txEvents,
 			NsRWS:     nsrws,
 		})
 	}
@@ -86,18 +93,39 @@ func (d *AllTxBatchDispatcher) HandleBatch(ctx context.Context, batch notificati
 
 	notifLogger.Debugf("[NOTIFY] block=%d dispatching=%d/%d txs", batch.BlockNumber, len(txs), len(batch.Events))
 
+	// TODO: StreamAllTransactions carries no block header, so there's no real hash to
+	// use here. Replace with the real hash once
+	// https://github.com/hyperledger/fabric-x-committer/issues/773 is implemented.
+	var parentNum uint64
+	if batch.BlockNumber > 0 {
+		parentNum = batch.BlockNumber - 1
+	}
 	b := blocks.Block{
 		Number:       batch.BlockNumber,
+		Hash:         blockNumberHash(batch.BlockNumber),
+		ParentHash:   blockNumberHash(parentNum),
 		Transactions: txs,
 	}
 
 	for _, h := range d.handlers {
 		if err := h.Handle(ctx, b); err != nil {
+			// graceful shutdown
+			if ctx.Err() != nil {
+				return err
+			}
+
 			panic(fmt.Errorf("handler failed: %w", err))
 		}
 	}
 
 	return nil
+}
+
+// blockNumberHash encodes n as a 32-byte big-endian hash-shaped placeholder.
+func blockNumberHash(n uint64) []byte {
+	h := make([]byte, 32)
+	binary.BigEndian.PutUint64(h[24:], n)
+	return h
 }
 
 // namespacesToNsRWS converts applicationpb.TxNamespace slices (as delivered by

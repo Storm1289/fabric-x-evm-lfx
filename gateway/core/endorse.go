@@ -70,6 +70,36 @@ func (e EndorsementClient) ExecuteTransaction(ctx context.Context, tx *types.Tra
 		return sdk.Endorsement{}, err
 	}
 
+	return e.endorse(ctx, inv, "process EVM transaction", func(ctx context.Context, s api.Service, inv endorsement.Invocation, ts time.Time) (*peer.ProposalResponse, error) {
+		return s.Execute(ctx, inv, tx, ts)
+	})
+}
+
+// balanceSetter is implemented only by the test-only directive endorser.
+type balanceSetter interface {
+	SetBalance(ctx context.Context, inv endorsement.Invocation, addr ethcommon.Address, amount *big.Int) (*peer.ProposalResponse, error)
+}
+
+// SetBalance forwards a setBalance directive to every endorser.
+func (e EndorsementClient) SetBalance(ctx context.Context, addr ethcommon.Address, amount *big.Int) (sdk.Endorsement, error) {
+	inv, err := e.createInvocation([][]byte{{byte(common.ProposalTypeSetBalance)}, addr.Bytes(), amount.Bytes()})
+	if err != nil {
+		return sdk.Endorsement{}, err
+	}
+
+	return e.endorse(ctx, inv, "process setBalance directive", func(ctx context.Context, s api.Service, inv endorsement.Invocation, _ time.Time) (*peer.ProposalResponse, error) {
+		bs, ok := s.(balanceSetter)
+		if !ok {
+			return nil, fmt.Errorf("endorser %T does not support setBalance directives", s)
+		}
+		return bs.SetBalance(ctx, inv, addr, amount)
+	})
+}
+
+// endorse fans the invocation out to every endorser via call and assembles the
+// endorsement. label identifies the invocation kind in the error message.
+func (e EndorsementClient) endorse(ctx context.Context, inv endorsement.Invocation, label string,
+	call func(context.Context, api.Service, endorsement.Invocation, time.Time) (*peer.ProposalResponse, error)) (sdk.Endorsement, error) {
 	// Single timestamp for all endorsers so RWsets match.
 	reqTime := time.Now()
 
@@ -83,7 +113,7 @@ func (e EndorsementClient) ExecuteTransaction(ctx context.Context, tx *types.Tra
 
 	for i, end := range e.endorsers {
 		processEndorsement := func(index int, endorser api.Service) {
-			pResp, err := endorser.Execute(ctx, inv, tx, reqTime)
+			pResp, err := call(ctx, endorser, inv, reqTime)
 			if err != nil {
 				// A Go error is a transport/delivery failure (e.g. gRPC), not a tx outcome.
 				errs[index] = fmt.Errorf("call endorser: %w", err)
@@ -98,7 +128,7 @@ func (e EndorsementClient) ExecuteTransaction(ctx context.Context, tx *types.Tra
 			case common.StatusOK, common.StatusEVMRevert, common.StatusExecFailure:
 				res[index] = pResp
 			default:
-				errs[index] = fmt.Errorf("process EVM transaction: %s", pResp.Response.Message)
+				errs[index] = fmt.Errorf("%s: %s", label, pResp.Response.Message)
 				cancel()
 			}
 		}
@@ -146,14 +176,65 @@ func (e *EndorsementClient) CallContract(ctx context.Context, args ethereum.Call
 	return payload, err
 }
 
-// EstimateGas simulates the call and returns EVM usedGas.
-// Reverts and other call failures surface the same errors as CallContract.
+// estimateGasCeiling bounds the search. The endorser never charges for gas,
+// so there's no cost to simulating generously.
+const estimateGasCeiling = uint64(10_000_000)
+
+// sstoreSentryBuffer covers EIP-2200's SSTORE sentry: at every SSTORE the EVM
+// requires strictly more than 2300 gas in reserve, regardless of the opcode's
+// own cost. Almost any state-changing call needs at least this much above its
+// own maxUsedGas.
+const sstoreSentryBuffer = uint64(2301)
+
+// EstimateGas returns a gas limit verified to work if resubmitted, not a raw
+// maxUsedGas value: EVM rules like EIP-2200's SSTORE sentry and EIP-150's
+// 63/64 call-forwarding need gas in reserve during execution, not just
+// enough in total, so exact maxUsedGas can sometimes still run out. EIP-150's
+// forwarding loss compounds with call depth, so we generously double on each
+// failure, until we hit the ceiling or succeed.
 func (e *EndorsementClient) EstimateGas(ctx context.Context, args ethereum.CallMsg, blockNumber *big.Int) (uint64, error) {
-	_, gas, err := e.call(ctx, args, blockNumber)
-	return gas, err
+	call := args
+
+	probeGas := func(gas uint64) (maxUsedGas uint64, ok bool, err error) {
+		call.Gas = gas
+		_, maxUsedGas, err = e.endorsers[0].Call(ctx, &call, blockNumber)
+		if err == nil {
+			return maxUsedGas, true, nil
+		}
+		callErr, isCallErr := errors.AsType[*common.CallError](err)
+		if !isCallErr {
+			return 0, false, fmt.Errorf("process call: %w", err)
+		}
+		if callErr.Reverted() && len(callErr.Data) > 0 {
+			// A revert with a reason: a real business-logic outcome that no
+			// amount of extra gas fixes, so stop instead of escalating.
+			return 0, false, &domain.RevertError{Reason: callErr.Message, Data: callErr.Data}
+		}
+		// Out of gas, or an empty-data revert -- indistinguishable here from a
+		// delegatecall (e.g. through an EIP-1167 minimal proxy) that ran out of
+		// the gas forwarded to it. Either way, treat it as "not enough gas yet".
+		return maxUsedGas, false, nil
+	}
+
+	maxUsedGas, ok, err := probeGas(estimateGasCeiling)
+	if err != nil {
+		return 0, err
+	}
+	if !ok {
+		return 0, fmt.Errorf("gas required exceeds allowance (%d)", estimateGasCeiling)
+	}
+
+	for guess := maxUsedGas + sstoreSentryBuffer; guess < estimateGasCeiling; guess *= 2 {
+		if _, ok, err := probeGas(guess); err != nil {
+			return 0, err
+		} else if ok {
+			return guess, nil
+		}
+	}
+	return estimateGasCeiling, nil // already verified above
 }
 
-// call is the shared endorser query path for eth_call and eth_estimateGas.
+// call is CallContract's query path.
 func (e *EndorsementClient) call(ctx context.Context, args ethereum.CallMsg, blockNumber *big.Int) ([]byte, uint64, error) {
 	payload, gas, err := e.endorsers[0].Call(ctx, &args, blockNumber)
 	if err == nil {
@@ -166,6 +247,13 @@ func (e *EndorsementClient) call(ctx context.Context, args ethereum.CallMsg, blo
 		return nil, gas, fmt.Errorf("process call: %w", err)
 	}
 	if callErr.Reverted() {
+		if len(callErr.Data) == 0 {
+			// Empty revert on a call is not an error: many Ethereum tools probe
+			// contracts this way. (EstimateGas does not apply this -- see its
+			// probeGas -- since it can't tell that apart from a delegatecall
+			// running out of the gas it was given.)
+			return nil, gas, nil
+		}
 		return nil, gas, &domain.RevertError{Reason: callErr.Message, Data: callErr.Data}
 	}
 	// For a call, both a failed execution and a rejected tx are surfaced as an

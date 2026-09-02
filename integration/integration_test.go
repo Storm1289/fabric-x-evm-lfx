@@ -191,6 +191,14 @@ func TestFabricX(t *testing.T) {
 	t.Run("two_of_two_endorsement_policy", func(t *testing.T) {
 		testTwoOfTwoEndorsementGRPC(t)
 	})
+
+	t.Run("hybrid_switches_to_notification", func(t *testing.T) {
+		testHybridSwitchesToNotification(t)
+	})
+
+	t.Run("hybrid_revert_after_switch", func(t *testing.T) {
+		testHybridRevertAfterSwitch(t)
+	})
 }
 
 // testTwoOfTwoEndorsementGRPC runs org1's and org2's endorsers as separate,
@@ -215,9 +223,15 @@ func testTwoOfTwoEndorsementGRPC(t *testing.T) {
 	}
 
 	addr := deploySmartContract(t, gw, ethClient)
+	// The endorsers sync independently of the gateway, so a commit the gateway has
+	// already recorded is not necessarily visible to them yet. Wait before the call
+	// below, whose nonce is read from an endorser. See waitForReadEndorser.
+	waitForReadEndorser(t, gw, ethClient.Address(), 1)
 
 	greeting := "Hello from a 2-of-2 endorsed transaction"
 	callSmartContract(t, ethClient, addr, gw, "setGreeting", greeting)
+	// Likewise before the query, which an endorser answers from its own state.
+	waitForReadEndorser(t, gw, ethClient.Address(), 2)
 
 	querySmartContractExpect(t, ethClient, addr, &TestHarness{Gateways: []*core.Gateway{gw}}, greeting, "greet")
 }
