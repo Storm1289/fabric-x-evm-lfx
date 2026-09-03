@@ -11,7 +11,7 @@ package fabricx
 import (
 	"bytes"
 	"fmt"
-	"sort"
+	"slices"
 
 	"github.com/hyperledger/fabric-protos-go-apiv2/peer"
 	"github.com/hyperledger/fabric-x-common/api/applicationpb"
@@ -148,14 +148,14 @@ func buildTx(rws blocks.ReadWriteSet, namespace string, metadata [][]byte) *appl
 		readsOnly = append(readsOnly, read)
 	}
 
-	sort.Slice(readsOnly, func(i, j int) bool {
-		return bytes.Compare(readsOnly[i].Key, readsOnly[j].Key) < 0
+	slices.SortFunc(readsOnly, func(a, b *applicationpb.Read) int {
+		return bytes.Compare(a.Key, b.Key)
 	})
-	sort.Slice(readWrites, func(i, j int) bool {
-		return bytes.Compare(readWrites[i].Key, readWrites[j].Key) < 0
+	slices.SortFunc(readWrites, func(a, b *applicationpb.ReadWrite) int {
+		return bytes.Compare(a.Key, b.Key)
 	})
-	sort.Slice(blindWrites, func(i, j int) bool {
-		return bytes.Compare(blindWrites[i].Key, blindWrites[j].Key) < 0
+	slices.SortFunc(blindWrites, func(a, b *applicationpb.Write) int {
+		return bytes.Compare(a.Key, b.Key)
 	})
 
 	return &applicationpb.Tx{

@@ -64,7 +64,7 @@ func TestNewInvocation_SignerFailurePropagates(t *testing.T) {
 }
 
 // The packager copies the header into the envelope with only the type changed,
-// so it must still say everything the SDK's does.
+// so it must still say everything the SDK's does apart from what it never reads.
 func TestNewInvocation_ChannelHeaderMatchesSDK(t *testing.T) {
 	args := [][]byte{{0xfb}, []byte("tx")}
 
@@ -86,8 +86,9 @@ func TestNewInvocation_ChannelHeaderMatchesSDK(t *testing.T) {
 	if gotHdr.Epoch != wantHdr.Epoch {
 		t.Errorf("Epoch = %d, want %d", gotHdr.Epoch, wantHdr.Epoch)
 	}
-	if !bytes.Equal(gotHdr.Extension, wantHdr.Extension) {
-		t.Errorf("Extension = %x, want %x", gotHdr.Extension, wantHdr.Extension)
+	// Fabric-X packaging never reads the extension, so we leave it out.
+	if len(gotHdr.Extension) != 0 {
+		t.Errorf("Extension = %x, want it left out", gotHdr.Extension)
 	}
 	if gotHdr.TxId != got.TxID {
 		t.Errorf("header TxId = %q, want the invocation's %q", gotHdr.TxId, got.TxID)

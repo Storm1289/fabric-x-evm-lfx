@@ -22,7 +22,7 @@ import (
 const nonceSize = 24
 
 // NewInvocation builds a Fabric-X invocation, without the proposal payload,
-// creator or hash that a Fabric-X envelope never reads.
+// creator, hash or chaincode header extension that a Fabric-X envelope never reads.
 func NewInvocation(signer sdk.Signer, channel, namespace, nsVersion string, args [][]byte) (endorsement.Invocation, error) {
 	creator, err := signer.Serialize()
 	if err != nil {
@@ -37,16 +37,11 @@ func NewInvocation(signer sdk.Signer, channel, namespace, nsVersion string, args
 	txID := protoutil.ComputeTxID(nonce, creator)
 	ccid := &peer.ChaincodeID{Name: namespace, Version: nsVersion}
 
-	ccHdrExt, err := protoutil.Marshal(&peer.ChaincodeHeaderExtension{ChaincodeId: ccid})
-	if err != nil {
-		return endorsement.Invocation{}, fmt.Errorf("marshal chaincode header extension: %w", err)
-	}
 	chdr, err := protoutil.Marshal(&commonpb.ChannelHeader{
 		Type:      int32(commonpb.HeaderType_ENDORSER_TRANSACTION),
 		TxId:      txID,
 		Timestamp: timestamppb.Now(),
 		ChannelId: channel,
-		Extension: ccHdrExt,
 	})
 	if err != nil {
 		return endorsement.Invocation{}, fmt.Errorf("marshal channel header: %w", err)
