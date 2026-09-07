@@ -69,6 +69,7 @@ func TestConvertToDomain_ValidTx(t *testing.T) {
 	require.Len(t, got.Transactions, 1)
 	assert.Equal(t, uint8(1), got.Transactions[0].Status)
 	assert.Equal(t, "tx-1", got.Transactions[0].FabricTxID)
+	assert.True(t, got.Transactions[0].FabricValid)
 }
 
 func TestConvertToDomain_InvalidTxStatus(t *testing.T) {
@@ -90,6 +91,7 @@ func TestConvertToDomain_InvalidTxStatus(t *testing.T) {
 
 	require.Len(t, got.Transactions, 1)
 	assert.Equal(t, uint8(0), got.Transactions[0].Status)
+	assert.False(t, got.Transactions[0].FabricValid)
 }
 
 func TestConvertToDomain_SkipsInsufficientInputArgs(t *testing.T) {

@@ -32,6 +32,8 @@ type Transaction struct {
 	FabricTxID      string
 	FabricTxStatus  int   // from the SDK Transaction.Status, which is currently never set
 	FabricValid     bool  // Fabric-valid commit, so the nonce was consumed; true for reverts
+	FabricTxStatus  int
+	FabricValid     bool  // Fabric-valid commit: the nonce was consumed, reverts included
 	Logs            []Log // populated for receipt queries
 }
 
