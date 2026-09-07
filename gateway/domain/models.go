@@ -31,8 +31,6 @@ type Transaction struct {
 	Status          uint8 // EVM receipt status: 1 is success, 0 is a revert or an invalid tx
 	FabricTxID      string
 	FabricTxStatus  int   // from the SDK Transaction.Status, which is currently never set
-	FabricValid     bool  // Fabric-valid commit, so the nonce was consumed; true for reverts
-	FabricTxStatus  int
 	FabricValid     bool  // Fabric-valid commit: the nonce was consumed, reverts included
 	Logs            []Log // populated for receipt queries
 }
