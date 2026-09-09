@@ -15,6 +15,19 @@ import (
 	"github.com/hyperledger/fabric-x-sdk/blocks"
 )
 
+// update atomically applies a batch of updates to the store, deriving the
+// block number from the batch's first entry (0 for an empty batch). Test
+// only: nothing in production calls it (blocks only ever arrive as
+// blocks.Block, via Handle) — it exists so tests can drive applyBlock
+// directly with a flat batch instead of building a full blocks.Block.
+func (kvs *LightKVS) update(updates []KeyValueVersion) error {
+	blockNum := uint64(0)
+	if len(updates) > 0 {
+		blockNum = updates[0].BlockNum
+	}
+	return kvs.applyBlock(blockNum, updates)
+}
+
 // TestNewLightKVS tests the creation of a new LightKVS instance
 func TestNewLightKVS(t *testing.T) {
 	kvs := NewLightKVS(1)
@@ -43,7 +56,7 @@ func TestNewSnapshot_ExplicitZeroIsNotLatest(t *testing.T) {
 	key := "acc:0x1:bal"
 
 	// Genesis empty, then write at block 1 so tip != genesis.
-	if err := kvs.Update([]KeyValueVersion{{
+	if err := kvs.update([]KeyValueVersion{{
 		Key: ns + ":" + key, Value: []byte{0x2a}, BlockNum: 1, TxNum: 0, TxID: "tx1",
 	}}); err != nil {
 		t.Fatalf("Update: %v", err)
@@ -97,9 +110,6 @@ func TestNewSnapshot(t *testing.T) {
 	if r.Snapshot == nil {
 		t.Error("reader snapshot is nil")
 	}
-	if r.Kvs != kvs {
-		t.Error("reader kvs reference is incorrect")
-	}
 }
 
 // TestReaderGet tests reading values from a snapshot
@@ -125,7 +135,7 @@ func TestReaderGet(t *testing.T) {
 			IsDelete: false,
 		},
 	}
-	err := kvs.Update(updates)
+	err := kvs.update(updates)
 	if err != nil {
 		t.Fatalf("Update failed: %v", err)
 	}
@@ -192,7 +202,7 @@ func TestReaderGetNilValue(t *testing.T) {
 			IsDelete: false,
 		},
 	}
-	err := kvs.Update(updates)
+	err := kvs.update(updates)
 	if err != nil {
 		t.Fatalf("Update failed: %v", err)
 	}
@@ -268,7 +278,7 @@ func TestUpdate(t *testing.T) {
 		},
 	}
 
-	err := kvs.Update(updates)
+	err := kvs.update(updates)
 	if err != nil {
 		t.Fatalf("Update failed: %v", err)
 	}
@@ -318,7 +328,7 @@ func TestUpdateVersionIncrement(t *testing.T) {
 			IsDelete: false,
 		},
 	}
-	err := kvs.Update(updates1)
+	err := kvs.update(updates1)
 	if err != nil {
 		t.Fatalf("Update failed: %v", err)
 	}
@@ -339,7 +349,7 @@ func TestUpdateVersionIncrement(t *testing.T) {
 			IsDelete: false,
 		},
 	}
-	err = kvs.Update(updates2)
+	err = kvs.update(updates2)
 	if err != nil {
 		t.Fatalf("Update failed: %v", err)
 	}
@@ -360,7 +370,7 @@ func TestUpdateVersionIncrement(t *testing.T) {
 			IsDelete: false,
 		},
 	}
-	err = kvs.Update(updates3)
+	err = kvs.update(updates3)
 	if err != nil {
 		t.Fatalf("Update failed: %v", err)
 	}
@@ -386,7 +396,7 @@ func TestUpdateDelete(t *testing.T) {
 			IsDelete: false,
 		},
 	}
-	err := kvs.Update(updates1)
+	err := kvs.update(updates1)
 	if err != nil {
 		t.Fatalf("Update failed: %v", err)
 	}
@@ -407,7 +417,7 @@ func TestUpdateDelete(t *testing.T) {
 			TxID:     "tx2",
 		},
 	}
-	err = kvs.Update(updates2)
+	err = kvs.update(updates2)
 	if err != nil {
 		t.Fatalf("Update failed: %v", err)
 	}
@@ -423,7 +433,7 @@ func TestUpdateDelete(t *testing.T) {
 func TestUpdateEmptyBatch(t *testing.T) {
 	kvs := NewLightKVS(1)
 
-	err := kvs.Update([]KeyValueVersion{})
+	err := kvs.update([]KeyValueVersion{})
 	if err != nil {
 		t.Fatalf("Update with empty batch failed: %v", err)
 	}
@@ -449,7 +459,7 @@ func TestSnapshotIsolation(t *testing.T) {
 			IsDelete: false,
 		},
 	}
-	err := kvs.Update(updates1)
+	err := kvs.update(updates1)
 	if err != nil {
 		t.Fatalf("Update failed: %v", err)
 	}
@@ -472,7 +482,7 @@ func TestSnapshotIsolation(t *testing.T) {
 			IsDelete: false,
 		},
 	}
-	err = kvs.Update(updates2)
+	err = kvs.update(updates2)
 	if err != nil {
 		t.Fatalf("Update failed: %v", err)
 	}
@@ -518,7 +528,7 @@ func TestConcurrentReaders(t *testing.T) {
 			IsDelete: false,
 		},
 	}
-	err := kvs.Update(updates)
+	err := kvs.update(updates)
 	if err != nil {
 		t.Fatalf("Update failed: %v", err)
 	}
@@ -840,7 +850,11 @@ func TestHandleDeletes(t *testing.T) {
 	}
 }
 
-// TestHandleEmptyBlock tests handling a block with no transactions
+// TestHandleEmptyBlock tests handling a block with no transactions.
+//
+// An empty block contributes no writes but still advances the checkpoint, so
+// that height tracks ledger height and this store can serve as a synchronizer's
+// height reader.
 func TestHandleEmptyBlock(t *testing.T) {
 	kvs := NewLightKVS(1)
 	ctx := context.Background()
@@ -855,10 +869,9 @@ func TestHandleEmptyBlock(t *testing.T) {
 		t.Fatalf("Handle failed: %v", err)
 	}
 
-	// Block number should not change for empty blocks
 	snapshot := kvs.Current.Load()
-	if snapshot.BlockNumber != 0 {
-		t.Errorf("expected block number 0, got %d", snapshot.BlockNumber)
+	if snapshot.BlockNumber != 1 {
+		t.Errorf("expected block number 1, got %d", snapshot.BlockNumber)
 	}
 }
 
@@ -887,7 +900,7 @@ func TestBlockNumber(t *testing.T) {
 			IsDelete: false,
 		},
 	}
-	err = kvs.Update(updates)
+	err = kvs.update(updates)
 	if err != nil {
 		t.Fatalf("Update failed: %v", err)
 	}
@@ -927,7 +940,7 @@ func TestGetMethod(t *testing.T) {
 			IsDelete: false,
 		},
 	}
-	err := kvs.Update(updates)
+	err := kvs.update(updates)
 	if err != nil {
 		t.Fatalf("Update failed: %v", err)
 	}
@@ -942,83 +955,6 @@ func TestGetMethod(t *testing.T) {
 	}
 	if string(record.Value) != "value1" {
 		t.Errorf("expected 'value1', got '%s'", string(record.Value))
-	}
-}
-
-// TestTruncateValue tests the truncateValue helper function
-func TestTruncateValue(t *testing.T) {
-	tests := []struct {
-		name     string
-		value    []byte
-		maxLen   int
-		expected string
-	}{
-		{
-			name:     "nil value",
-			value:    nil,
-			maxLen:   10,
-			expected: "<nil>",
-		},
-		{
-			name:     "short value",
-			value:    []byte{0x01, 0x02, 0x03},
-			maxLen:   10,
-			expected: "010203",
-		},
-		{
-			name:     "long value",
-			value:    []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b},
-			maxLen:   5,
-			expected: "0102030405...",
-		},
-		{
-			name:     "exact length",
-			value:    []byte{0x01, 0x02, 0x03, 0x04, 0x05},
-			maxLen:   5,
-			expected: "0102030405",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := truncateValue(tt.value, tt.maxLen)
-			if result != tt.expected {
-				t.Errorf("expected '%s', got '%s'", tt.expected, result)
-			}
-		})
-	}
-}
-
-// TestKeyValueVersionToLogUpdate tests the toLogUpdate method
-func TestKeyValueVersionToLogUpdate(t *testing.T) {
-	kvv := KeyValueVersion{
-		Key:      "test:key",
-		Value:    []byte{0x01, 0x02, 0x03},
-		BlockNum: 10,
-		TxNum:    5,
-		TxID:     "tx123",
-		IsDelete: false,
-	}
-
-	logUpdate := kvv.toLogUpdate()
-
-	if logUpdate.Key != "test:key" {
-		t.Errorf("expected key 'test:key', got '%s'", logUpdate.Key)
-	}
-	if logUpdate.Value != "010203" {
-		t.Errorf("expected value '010203', got '%s'", logUpdate.Value)
-	}
-	if logUpdate.BlockNum != 10 {
-		t.Errorf("expected block num 10, got %d", logUpdate.BlockNum)
-	}
-	if logUpdate.TxNum != 5 {
-		t.Errorf("expected tx num 5, got %d", logUpdate.TxNum)
-	}
-	if logUpdate.TxID != "tx123" {
-		t.Errorf("expected tx id 'tx123', got '%s'", logUpdate.TxID)
-	}
-	if logUpdate.IsDelete != false {
-		t.Errorf("expected is_delete false, got %v", logUpdate.IsDelete)
 	}
 }
 
@@ -1053,7 +989,7 @@ func TestMultipleNamespaces(t *testing.T) {
 		},
 	}
 
-	err := kvs.Update(updates)
+	err := kvs.update(updates)
 	if err != nil {
 		t.Fatalf("Update failed: %v", err)
 	}
@@ -1115,7 +1051,7 @@ func TestStructuralSharing(t *testing.T) {
 			IsDelete: false,
 		},
 	}
-	err := kvs.Update(updates1)
+	err := kvs.update(updates1)
 	if err != nil {
 		t.Fatalf("Update failed: %v", err)
 	}
@@ -1134,7 +1070,7 @@ func TestStructuralSharing(t *testing.T) {
 			IsDelete: false,
 		},
 	}
-	err = kvs.Update(updates2)
+	err = kvs.update(updates2)
 	if err != nil {
 		t.Fatalf("Update failed: %v", err)
 	}
@@ -1170,7 +1106,7 @@ func TestConcurrentReadersWithUpdates(t *testing.T) {
 			IsDelete: false,
 		},
 	}
-	err := kvs.Update(updates)
+	err := kvs.update(updates)
 	if err != nil {
 		t.Fatalf("Update failed: %v", err)
 	}
@@ -1222,7 +1158,7 @@ func TestConcurrentReadersWithUpdates(t *testing.T) {
 				IsDelete: false,
 			},
 		}
-		err := kvs.Update(updates)
+		err := kvs.update(updates)
 		if err != nil {
 			t.Fatalf("Update %d failed: %v", i, err)
 		}
@@ -1246,7 +1182,7 @@ func TestSnapshotByBlockNumber(t *testing.T) {
 			IsDelete: false,
 		},
 	}
-	err := kvs.Update(updates1)
+	err := kvs.update(updates1)
 	if err != nil {
 		t.Fatalf("Update block 1 failed: %v", err)
 	}
@@ -1262,7 +1198,7 @@ func TestSnapshotByBlockNumber(t *testing.T) {
 			IsDelete: false,
 		},
 	}
-	err = kvs.Update(updates2)
+	err = kvs.update(updates2)
 	if err != nil {
 		t.Fatalf("Update block 2 failed: %v", err)
 	}
@@ -1330,7 +1266,7 @@ func TestSnapshotHistoryEviction(t *testing.T) {
 				IsDelete: false,
 			},
 		}
-		err := kvs.Update(updates)
+		err := kvs.update(updates)
 		if err != nil {
 			t.Fatalf("Update block %d failed: %v", i, err)
 		}
@@ -1407,7 +1343,7 @@ func TestSnapshotNonExistentBlock(t *testing.T) {
 			IsDelete: false,
 		},
 	}
-	err := kvs.Update(updates)
+	err := kvs.update(updates)
 	if err != nil {
 		t.Fatalf("Update failed: %v", err)
 	}
@@ -1451,7 +1387,7 @@ func TestSnapshotIsolationAcrossBlocks(t *testing.T) {
 			IsDelete: false,
 		},
 	}
-	err := kvs.Update(updates1)
+	err := kvs.update(updates1)
 	if err != nil {
 		t.Fatalf("Update block 1 failed: %v", err)
 	}
@@ -1474,7 +1410,7 @@ func TestSnapshotIsolationAcrossBlocks(t *testing.T) {
 			IsDelete: false,
 		},
 	}
-	err = kvs.Update(updates2)
+	err = kvs.update(updates2)
 	if err != nil {
 		t.Fatalf("Update block 2 failed: %v", err)
 	}
@@ -1515,7 +1451,7 @@ func TestSnapshotIsolationAcrossBlocks(t *testing.T) {
 			IsDelete: false,
 		},
 	}
-	err = kvs.Update(updates3)
+	err = kvs.update(updates3)
 	if err != nil {
 		t.Fatalf("Update block 3 failed: %v", err)
 	}
