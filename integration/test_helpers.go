@@ -170,8 +170,11 @@ func defaultHandlerChain(t *testing.T, ctx context.Context, cfg config.Config, e
 	if cfg.Network.Namespace == "synthetic" {
 		txPerSec = 10000
 	}
-	// Tests prime and revert ledger state out of band; reconcile before each admit.
-	gw, err := app.BuildGateway(ctx, ends, gwSigner, cfg.Network, chain, submitters, cfg.Gateway.SubmitterCount, cfg.Gateway.WorkerCount, txQueue, cfg.Gateway.EndorsementChanSize, txPerSec, core.WithNonceSequencer(testimpl.NewReconcilingGate))
+	// Tests prime and revert ledger state out of band, so the harness parks nothing.
+	if txQueue == nil {
+		txQueue = core.NewTxQueue()
+	}
+	gw, err := app.BuildGateway(ctx, ends, gwSigner, cfg.Network, chain, submitters, cfg.Gateway.SubmitterCount, cfg.Gateway.WorkerCount, txQueue, cfg.Gateway.EndorsementChanSize, txPerSec, core.WithNonceSequencer(testimpl.NewPassthroughGate(txQueue)))
 	if err != nil {
 		t.Fatalf("build gateway: %v", err)
 	}

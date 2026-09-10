@@ -30,6 +30,9 @@ type stubState struct {
 	nonces map[common.Address]uint64
 	err    error
 	reads  int
+	// onRead, if set, runs at the start of NonceAt so a test can interleave with
+	// a seed that is in flight.
+	onRead func()
 }
 
 func newStubState() *stubState {
@@ -37,6 +40,9 @@ func newStubState() *stubState {
 }
 
 func (s *stubState) NonceAt(_ context.Context, a common.Address, _ *big.Int) (uint64, error) {
+	if s.onRead != nil {
+		s.onRead()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.reads++
@@ -84,14 +90,6 @@ func newTestGate(state stateReader) (*nonceGate, *enqueueRecorder) {
 	q := &enqueueRecorder{}
 	signer := types.LatestSignerForChainID(big.NewInt(testChainID))
 	return newNonceGate(state, signer, q), q
-}
-
-// reconcileAdmit mimics the test backend's reconciling gate: resync then admit.
-func reconcileAdmit(g *nonceGate, tx *types.Transaction) error {
-	if err := g.Resync(context.Background(), tx); err != nil {
-		return err
-	}
-	return g.Admit(context.Background(), tx)
 }
 
 func senderAddr(key *ecdsa.PrivateKey) common.Address {
@@ -229,44 +227,6 @@ func TestNonceGate_InOrderAdmitsSkipStateReads(t *testing.T) {
 	require.Equal(t, 1, state.readCount())
 }
 
-func TestNonceGate_ReconcilesStaleCache(t *testing.T) {
-	key := newKey(t)
-	from := senderAddr(key)
-	state := newStubState()
-	state.set(from, 5)
-	plain, q := newTestGate(state)
-
-	require.NoError(t, reconcileAdmit(plain, newValidTx(t, key, validTxOpts{nonce: 5})))
-	require.Equal(t, []uint64{5}, q.nonces())
-
-	// The ledger advances by a path the gate did not observe.
-	state.set(from, 8)
-
-	// A nonce ahead of the stale cache still admits: the re-read picks up the
-	// real committed nonce.
-	require.NoError(t, reconcileAdmit(plain, newValidTx(t, key, validTxOpts{nonce: 8})))
-	require.Equal(t, []uint64{5, 8}, q.nonces())
-}
-
-func TestNonceGate_ReconcilesAfterRevert(t *testing.T) {
-	key := newKey(t)
-	from := senderAddr(key)
-	state := newStubState()
-	state.set(from, 5)
-	plain, q := newTestGate(state)
-
-	require.NoError(t, reconcileAdmit(plain, newValidTx(t, key, validTxOpts{nonce: 5})))
-	require.Equal(t, []uint64{5}, q.nonces())
-
-	// A snapshot revert moves the ledger nonce back below the cache.
-	state.set(from, 2)
-
-	// A nonce below the stale cache still admits: the re-read follows the revert
-	// down instead of rejecting it as too low.
-	require.NoError(t, reconcileAdmit(plain, newValidTx(t, key, validTxOpts{nonce: 2})))
-	require.Equal(t, []uint64{5, 2}, q.nonces())
-}
-
 func TestNonceGate_TTLEviction(t *testing.T) {
 	key := newKey(t)
 	state := newStubState()
@@ -353,4 +313,164 @@ func TestNonceGate_ObserveAdvancesOnRevert(t *testing.T) {
 
 	require.Equal(t, []uint64{5, 6}, q.nonces())
 	require.Nil(t, gate.IsPending(tx6.Hash()))
+}
+
+// An Observe landing while a seed is in flight must not be undone by the stale
+// value the store returns, and eviction must not drop the reservation.
+func TestNonceGate_SeedRaceWithObserveAndEvict(t *testing.T) {
+	key := newKey(t)
+	from := senderAddr(key)
+	state := newStubState()
+	state.set(from, 5)
+	gate, q := newTestGate(state)
+	gate.maxSenders = 0 // every eviction pass tries to drop this sender
+
+	seeding := make(chan struct{})
+	release := make(chan struct{})
+	state.onRead = func() {
+		close(seeding)
+		<-release
+	}
+
+	admitted := make(chan error, 1)
+	go func() {
+		admitted <- gate.Admit(context.Background(), newValidTx(t, key, validTxOpts{nonce: 6}))
+	}()
+
+	<-seeding
+	// Nonce 5 commits and Observe evicts, both while the seed is off the lock.
+	gate.Observe(committedBlock(t, key, 5))
+	close(release)
+
+	require.NoError(t, <-admitted)
+	// The commit won: nonce 6 is next, so it is queued rather than parked
+	// waiting for a nonce that has already committed.
+	require.Equal(t, []uint64{6}, q.nonces())
+
+	// The reservation also survived the eviction pass, so the advanced nonce is
+	// still cached for the next transaction from this sender.
+	gate.mu.RLock()
+	ss, ok := gate.senders[from]
+	gate.mu.RUnlock()
+	require.True(t, ok, "the seeding reservation must not be evicted")
+	require.Equal(t, uint64(6), ss.next)
+}
+
+// A failed seed must not leave a half-built sender behind for the next Admit to
+// read as an authoritative zero.
+func TestNonceGate_SeedFailureLeavesNoSender(t *testing.T) {
+	key := newKey(t)
+	state := newStubState()
+	state.err = errors.New("store down")
+	gate, _ := newTestGate(state)
+
+	require.Error(t, gate.Admit(context.Background(), newValidTx(t, key, validTxOpts{nonce: 5})))
+
+	gate.mu.RLock()
+	defer gate.mu.RUnlock()
+	require.Empty(t, gate.senders)
+}
+
+// Senders holding parked transactions are never evicted, however far over the
+// cap the cache is.
+func TestNonceGate_EvictLRUKeepsParkedSenders(t *testing.T) {
+	key := newKey(t)
+	from := senderAddr(key)
+	state := newStubState()
+	state.set(from, 5)
+	gate, q := newTestGate(state)
+
+	require.NoError(t, gate.Admit(context.Background(), newValidTx(t, key, validTxOpts{nonce: 7})))
+	gate.maxSenders = 0
+	gate.evictLRU()
+
+	gate.mu.RLock()
+	_, kept := gate.senders[from]
+	gate.mu.RUnlock()
+	require.True(t, kept, "a sender with parked transactions must survive eviction")
+
+	// It is still parked, so the gap filling still releases it.
+	gate.Observe(committedBlock(t, key, 5, 6))
+	require.Equal(t, []uint64{7}, q.nonces())
+}
+
+// A transaction whose sender cannot be recovered is rejected before it reaches
+// any per-sender state.
+func TestNonceGate_UnrecoverableSenderRejected(t *testing.T) {
+	state := newStubState()
+	gate, q := newTestGate(state)
+
+	to := common.HexToAddress("0x1")
+	unsigned := types.NewTx(&types.DynamicFeeTx{
+		ChainID:   big.NewInt(testChainID),
+		Nonce:     5,
+		Gas:       21000,
+		GasTipCap: big.NewInt(1),
+		GasFeeCap: big.NewInt(1),
+		To:        &to,
+	})
+
+	require.Error(t, gate.Admit(context.Background(), unsigned))
+	require.Empty(t, q.nonces())
+	require.Equal(t, 0, state.readCount(), "a bad signature must not reach the store")
+}
+
+// A second transaction at an already-parked nonce replaces the first, and the
+// by-hash index follows it so the replaced one stops reporting as pending.
+func TestNonceGate_ParkedReplacement(t *testing.T) {
+	key := newKey(t)
+	state := newStubState()
+	state.set(senderAddr(key), 5)
+	gate, q := newTestGate(state)
+
+	first := newValidTx(t, key, validTxOpts{nonce: 7, gas: 21_000})
+	second := newValidTx(t, key, validTxOpts{nonce: 7, gas: 22_000})
+	require.NoError(t, gate.Admit(context.Background(), first))
+	require.NoError(t, gate.Admit(context.Background(), second))
+
+	require.Nil(t, gate.IsPending(first.Hash()), "the replaced tx is no longer parked")
+	require.NotNil(t, gate.IsPending(second.Hash()))
+
+	// Filling the gap releases the replacement, not the original.
+	gate.Observe(committedBlock(t, key, 5, 6))
+	require.Equal(t, []uint64{7}, q.nonces())
+	require.Equal(t, second.Hash(), q.txs[0].Hash())
+}
+
+// Parked transactions that a commit leaves below the sender's next nonce are
+// dropped rather than queued.
+func TestNonceGate_ObserveDropsStaleParked(t *testing.T) {
+	key := newKey(t)
+	state := newStubState()
+	state.set(senderAddr(key), 5)
+	gate, q := newTestGate(state)
+
+	stale := newValidTx(t, key, validTxOpts{nonce: 7})
+	require.NoError(t, gate.Admit(context.Background(), stale))
+
+	// Nonce 8 commits, so 7 can never be next again.
+	gate.Observe(committedBlock(t, key, 8))
+
+	require.Empty(t, q.nonces(), "a nonce below next must not be queued")
+	require.Nil(t, gate.IsPending(stale.Hash()), "and must leave the by-hash index")
+}
+
+// A committed entry whose raw transaction cannot be decoded is skipped instead
+// of advancing anything.
+func TestNonceGate_ObserveSkipsUndecodableTx(t *testing.T) {
+	key := newKey(t)
+	from := senderAddr(key)
+	state := newStubState()
+	state.set(from, 5)
+	gate, q := newTestGate(state)
+
+	require.NoError(t, gate.Admit(context.Background(), newValidTx(t, key, validTxOpts{nonce: 6})))
+
+	gate.Observe([]domain.Transaction{{
+		FromAddress: from.Bytes(),
+		RawTx:       []byte("not a transaction"),
+		FabricValid: true,
+	}})
+
+	require.Empty(t, q.nonces(), "an undecodable commit advances no nonce")
 }

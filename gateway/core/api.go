@@ -91,7 +91,6 @@ type Gateway struct {
 	Signer          types.Signer
 	TxQueue         TxQueueInterface
 	nonceGate       NonceSequencer
-	wrapNonce       func(ResyncingSequencer) NonceSequencer // test-only gate wrapper
 	workerCount     int
 	wg              sync.WaitGroup
 	stopOnce        sync.Once
@@ -143,12 +142,9 @@ func New(ec *EndorsementClient, batchSubmitter *BatchSubmitter, store Store, cha
 		opt(g)
 	}
 	// Park future-nonce transactions and release them in nonce order as earlier
-	// nonces commit. A test-only wrapper may reconcile before admitting.
-	gate := newNonceGate(g, g.Signer, g.TxQueue)
-	if g.wrapNonce != nil {
-		g.nonceGate = g.wrapNonce(gate)
-	} else {
-		g.nonceGate = gate
+	// nonces commit. An option may have supplied one already.
+	if g.nonceGate == nil {
+		g.nonceGate = newNonceGate(g, g.Signer, g.TxQueue)
 	}
 	return g, nil
 }
@@ -156,11 +152,10 @@ func New(ec *EndorsementClient, batchSubmitter *BatchSubmitter, store Store, cha
 // Option configures a Gateway at construction.
 type Option func(*Gateway)
 
-// WithNonceSequencer wraps the nonce gate at construction. The wrapper receives
-// the plain gate and returns the sequencer to use; the test backend supplies its
-// reconciling gate this way.
-func WithNonceSequencer(wrap func(ResyncingSequencer) NonceSequencer) Option {
-	return func(g *Gateway) { g.wrapNonce = wrap }
+// WithNonceSequencer replaces the nonce gate at construction. The test backend
+// supplies a passthrough this way; production leaves it unset.
+func WithNonceSequencer(seq NonceSequencer) Option {
+	return func(g *Gateway) { g.nonceGate = seq }
 }
 
 // Start initializes the worker pool to process transactions from the queue

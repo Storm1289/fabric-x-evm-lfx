@@ -41,13 +41,6 @@ type NonceSequencer interface {
 	IsPending(hash common.Hash) *types.Transaction
 }
 
-// ResyncingSequencer is a NonceSequencer that can re-read a sender's committed
-// nonce from state. The test backend wraps it to follow out-of-band changes.
-type ResyncingSequencer interface {
-	NonceSequencer
-	Resync(ctx context.Context, tx *types.Transaction) error
-}
-
 // nonceGate enqueues each sender's next expected nonce, parks higher ones until
 // the gap fills, and rejects lower ones. The next nonce is cached per sender.
 type nonceGate struct {
@@ -70,6 +63,9 @@ type senderState struct {
 	next     uint64 // next nonce eligible to admit
 	parked   map[uint64]parkedTx
 	lastSeen time.Time
+	// seeding marks an entry reserved by Admit while it reads the store off the
+	// lock. Eviction must skip it, or the seed lands on an entry that is gone.
+	seeding bool
 }
 
 type parkedTx struct {
@@ -100,20 +96,31 @@ func (g *nonceGate) Admit(ctx context.Context, tx *types.Transaction) error {
 
 	g.mu.Lock()
 	// Steady state: the sender is cached and we never touch the store. On a miss,
-	// release the lock for the slow seed, then re-acquire and recheck - an Observe
-	// may have created the sender while we were unlocked.
+	// reserve the entry before releasing the lock for the slow seed, so an Observe
+	// cannot commit for this sender and then evict it while we are away.
 	ss := g.senders[from]
 	if ss == nil {
+		ss = &senderState{parked: make(map[uint64]parkedTx), seeding: true}
+		g.senders[from] = ss
+		g.evictLRU() // skips seeding entries, so it never drops the reservation
 		g.mu.Unlock()
+
 		seed, err := g.state.NonceAt(ctx, from, nil)
+
+		g.mu.Lock()
+		ss.seeding = false
 		if err != nil {
+			// Nothing was ever seeded, so leave no half-built entry behind.
+			if len(ss.parked) == 0 {
+				delete(g.senders, from)
+			}
+			g.mu.Unlock()
 			return fmt.Errorf("look up nonce: %w", err)
 		}
-		g.mu.Lock()
-		if ss = g.senders[from]; ss == nil {
-			g.evictLRU() // evict before insert so we never drop the new entry
-			ss = &senderState{next: seed, parked: make(map[uint64]parkedTx)}
-			g.senders[from] = ss
+		// An Observe during the read advanced next from a commit, which is newer
+		// than anything the store could have told us. Never move it backwards.
+		if seed > ss.next {
+			ss.next = seed
 		}
 	}
 	defer g.mu.Unlock()
@@ -140,35 +147,6 @@ func (g *nonceGate) Admit(ctx context.Context, tx *types.Transaction) error {
 		logger.Infof("nonce gate: replacing parked tx for %s at nonce %d", from, tx.Nonce())
 	}
 	g.park(ss, tx)
-	return nil
-}
-
-// Resync updates the cache to the sender's committed nonce and drops any parked
-// tx that is now too low.
-func (g *nonceGate) Resync(ctx context.Context, tx *types.Transaction) error {
-	from, err := types.Sender(g.signer, tx)
-	if err != nil {
-		return fmt.Errorf("recover sender: %w", err)
-	}
-	committed, err := g.state.NonceAt(ctx, from, nil)
-	if err != nil {
-		return fmt.Errorf("look up nonce: %w", err)
-	}
-
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	ss := g.senders[from]
-	if ss == nil {
-		ss = &senderState{parked: make(map[uint64]parkedTx)}
-		g.senders[from] = ss
-	}
-	ss.next = committed
-	ss.lastSeen = g.now()
-	for nonce := range ss.parked {
-		if nonce < ss.next {
-			g.unpark(ss, nonce)
-		}
-	}
 	return nil
 }
 
@@ -263,7 +241,7 @@ func (g *nonceGate) evictLRU() {
 		var oldestSeen time.Time
 		found := false
 		for from, ss := range g.senders {
-			if len(ss.parked) > 0 {
+			if len(ss.parked) > 0 || ss.seeding {
 				continue
 			}
 			if !found || ss.lastSeen.Before(oldestSeen) {

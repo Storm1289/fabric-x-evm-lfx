@@ -11,6 +11,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/hyperledger/fabric-x-evm/gateway/domain"
 	"github.com/hyperledger/fabric-x-sdk/blocks"
 	"github.com/stretchr/testify/require"
@@ -82,4 +84,58 @@ func TestHandle_QueueErrorPropagates(t *testing.T) {
 	g.nonceGate = newNonceGate(g, g.Signer, g.TxQueue)
 
 	require.ErrorIs(t, g.Handle(context.Background(), blocks.Block{}), boom)
+}
+
+// A resubmission of a parked transaction is rejected by the gate's own index,
+// not the queue's, since a parked tx never reaches the queue.
+func TestSendTransaction_ParkedResubmissionRejected(t *testing.T) {
+	key := newKey(t)
+	g := gatewayWithGate(t)
+
+	tx := newValidTx(t, key, validTxOpts{nonce: 3})
+	require.NoError(t, g.SendTransaction(context.Background(), tx))
+	require.Nil(t, g.TxQueue.IsPending(tx.Hash()), "parked, so not in the queue")
+
+	err := g.SendTransaction(context.Background(), tx)
+	require.ErrorIs(t, err, domain.ErrTransactionAlreadyPending)
+}
+
+// A supplied sequencer replaces the default gate instead of being wrapped by it.
+func TestWithNonceSequencer_ReplacesDefaultGate(t *testing.T) {
+	supplied := &countingSequencer{}
+
+	g, err := New(nil, nil, nil, testChainID, 1, nil, nil, WithNonceSequencer(supplied))
+	require.NoError(t, err)
+	require.Same(t, supplied, g.nonceGate)
+
+	key := newKey(t)
+	cfg, signer := chainCtx(t)
+	g.ChainConfig, g.Signer = cfg, signer
+	require.NoError(t, g.SendTransaction(context.Background(), newValidTx(t, key, validTxOpts{nonce: 9})))
+	require.Equal(t, 1, supplied.admits)
+}
+
+// countingSequencer records what the gateway asked of it.
+type countingSequencer struct {
+	admits int
+}
+
+func (s *countingSequencer) Admit(context.Context, *types.Transaction) error {
+	s.admits++
+	return nil
+}
+func (s *countingSequencer) Observe([]domain.Transaction)             {}
+func (s *countingSequencer) IsPending(common.Hash) *types.Transaction { return nil }
+
+// Pre-flight validation runs before the gate, so a rejected transaction never
+// reaches the queue or the parked set.
+func TestSendTransaction_ValidationRejectsBeforeGate(t *testing.T) {
+	key := newKey(t)
+	g := gatewayWithGate(t)
+
+	// Zero gas fails the txpool intrinsic-gas check.
+	tx := newValidTx(t, key, validTxOpts{nonce: 0, gas: 1})
+	require.Error(t, g.SendTransaction(context.Background(), tx))
+	require.Nil(t, g.TxQueue.IsPending(tx.Hash()))
+	require.Nil(t, g.nonceGate.IsPending(tx.Hash()))
 }
