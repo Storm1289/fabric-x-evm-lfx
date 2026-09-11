@@ -12,6 +12,7 @@ import (
 	"errors"
 	"math/big"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -350,10 +351,12 @@ func TestNonceGate_SeedRaceWithObserveAndEvict(t *testing.T) {
 	// The reservation also survived the eviction pass, so the advanced nonce is
 	// still cached for the next transaction from this sender.
 	gate.mu.RLock()
-	ss, ok := gate.senders[from]
+	ss, ok := gate.senders.lookup(from)
 	gate.mu.RUnlock()
-	require.True(t, ok, "the seeding reservation must not be evicted")
-	require.Equal(t, uint64(6), ss.next)
+	require.True(t, ok, "an entry held by a seeding Admit must not be evicted")
+	next, seeded := ss.next.value()
+	require.True(t, seeded)
+	require.Equal(t, uint64(6), next)
 }
 
 // A failed seed must not leave a half-built sender behind for the next Admit to
@@ -368,7 +371,106 @@ func TestNonceGate_SeedFailureLeavesNoSender(t *testing.T) {
 
 	gate.mu.RLock()
 	defer gate.mu.RUnlock()
-	require.Empty(t, gate.senders)
+	require.Zero(t, gate.senders.size())
+}
+
+// blockFirstRead holds the first NonceAt until release is called, and lets every
+// later read -- including the ones concurrent Admits issue for themselves -- run
+// straight through.
+func blockFirstRead(state *stubState) (seeding <-chan struct{}, release func()) {
+	started, gate := make(chan struct{}), make(chan struct{})
+	var reads int32
+	state.onRead = func() {
+		if atomic.AddInt32(&reads, 1) == 1 {
+			close(started)
+			<-gate
+		}
+	}
+	return started, func() { close(gate) }
+}
+
+// A second Admit arriving while the first is seeding must not read the reserved
+// entry's absent nonce as an authoritative zero, which would send a stale
+// transaction for execution.
+func TestNonceGate_ConcurrentAdmitDuringSeedRejectsStale(t *testing.T) {
+	key := newKey(t)
+	state := newStubState()
+	state.set(senderAddr(key), 5)
+	seeding, release := blockFirstRead(state)
+	gate, q := newTestGate(state)
+
+	admitted := make(chan error, 1)
+	go func() {
+		admitted <- gate.Admit(context.Background(), newValidTx(t, key, validTxOpts{nonce: 9}))
+	}()
+	<-seeding
+
+	err := gate.Admit(context.Background(), newValidTx(t, key, validTxOpts{nonce: 0}))
+	require.ErrorIs(t, err, ethcore.ErrNonceTooLow)
+
+	release()
+	require.NoError(t, <-admitted)
+	require.Empty(t, q.nonces())
+	require.Equal(t, 2, state.readCount(), "each Admit seeds for itself")
+}
+
+// A second Admit arriving while the first is seeding, carrying the nonce that is
+// genuinely next, must be enqueued. Parking it strands it: nothing of the
+// sender's is in flight, so no commit will ever arrive to release it.
+func TestNonceGate_ConcurrentAdmitDuringSeedEnqueuesReady(t *testing.T) {
+	key := newKey(t)
+	state := newStubState()
+	state.set(senderAddr(key), 5)
+	seeding, release := blockFirstRead(state)
+	gate, q := newTestGate(state)
+
+	future := newValidTx(t, key, validTxOpts{nonce: 9})
+	admitted := make(chan error, 1)
+	go func() {
+		admitted <- gate.Admit(context.Background(), future)
+	}()
+	<-seeding
+
+	ready := newValidTx(t, key, validTxOpts{nonce: 5})
+	require.NoError(t, gate.Admit(context.Background(), ready))
+
+	release()
+	require.NoError(t, <-admitted)
+
+	require.Equal(t, []uint64{5}, q.nonces())
+	require.Nil(t, gate.IsPending(ready.Hash()))
+	require.Equal(t, future.Hash(), gate.IsPending(future.Hash()).Hash())
+}
+
+// A seed that fails while a second Admit is parked on the same sender must still
+// leave no entry behind, or the sender is stuck at nonce zero for good.
+func TestNonceGate_SeedFailureWithConcurrentAdmitLeavesNoSender(t *testing.T) {
+	key := newKey(t)
+	state := newStubState()
+	state.err = errors.New("store down")
+	seeding, release := blockFirstRead(state)
+	gate, q := newTestGate(state)
+
+	admitted := make(chan error, 1)
+	go func() {
+		admitted <- gate.Admit(context.Background(), newValidTx(t, key, validTxOpts{nonce: 9}))
+	}()
+	<-seeding
+
+	require.Error(t, gate.Admit(context.Background(), newValidTx(t, key, validTxOpts{nonce: 5})))
+	release()
+	require.Error(t, <-admitted)
+
+	gate.mu.RLock()
+	size := gate.senders.size()
+	gate.mu.RUnlock()
+	require.Zero(t, size, "a failed seed must leave no entry to read as nonce zero")
+
+	// Once the store recovers, the sender is seeded from scratch.
+	state.err = nil
+	state.set(senderAddr(key), 5)
+	require.NoError(t, gate.Admit(context.Background(), newValidTx(t, key, validTxOpts{nonce: 5})))
+	require.Equal(t, []uint64{5}, q.nonces())
 }
 
 // Senders holding parked transactions are never evicted, however far over the
@@ -385,7 +487,7 @@ func TestNonceGate_EvictLRUKeepsParkedSenders(t *testing.T) {
 	gate.evictLRU()
 
 	gate.mu.RLock()
-	_, kept := gate.senders[from]
+	_, kept := gate.senders.lookup(from)
 	gate.mu.RUnlock()
 	require.True(t, kept, "a sender with parked transactions must survive eviction")
 

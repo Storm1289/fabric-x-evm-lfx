@@ -49,7 +49,7 @@ type nonceGate struct {
 	signer types.Signer
 	queue  enqueuer
 
-	senders map[common.Address]*senderState
+	senders *senderCache
 	byHash  map[common.Hash]*types.Transaction // parked txs indexed by hash
 
 	maxPerSender int
@@ -58,14 +58,33 @@ type nonceGate struct {
 	now          func() time.Time
 }
 
+// expectedNonce is a sender's next admissible nonce, which starts out unknown: an
+// entry reserved by Admit carries no nonce until its store read lands, and 0 is a
+// real nonce, so no caller may mistake the zero value for one. value withholds it
+// until it is set, and raise only ever moves it forwards -- a commit is newer than
+// anything a store read already in flight can report.
+type expectedNonce struct {
+	nonce uint64
+	known bool
+}
+
+func (e expectedNonce) value() (uint64, bool) { return e.nonce, e.known }
+
+func (e *expectedNonce) raise(n uint64) {
+	if !e.known || n > e.nonce {
+		e.nonce, e.known = n, true
+	}
+}
+
 // senderState is one sender's next expected nonce and its parked transactions.
 type senderState struct {
-	next     uint64 // next nonce eligible to admit
+	from     common.Address
+	next     expectedNonce
 	parked   map[uint64]parkedTx
 	lastSeen time.Time
-	// seeding marks an entry reserved by Admit while it reads the store off the
-	// lock. Eviction must skip it, or the seed lands on an entry that is gone.
-	seeding bool
+	// refs counts the callers holding this entry. Eviction never drops a held
+	// entry: Admit releases g.mu to read the store and must find its entry again.
+	refs int
 }
 
 type parkedTx struct {
@@ -73,12 +92,73 @@ type parkedTx struct {
 	parkedAt time.Time
 }
 
+// senderCache holds the per-sender state, reference counted so a caller can pin
+// an entry across an unlock. All of it is guarded by nonceGate.mu.
+type senderCache struct {
+	entries map[common.Address]*senderState
+}
+
+func newSenderCache() *senderCache {
+	return &senderCache{entries: make(map[common.Address]*senderState)}
+}
+
+// acquire pins the sender's entry, reserving a fresh one -- with no nonce yet --
+// if the sender is unknown. Every acquire must be paired with a release.
+func (c *senderCache) acquire(from common.Address) *senderState {
+	ss := c.entries[from]
+	if ss == nil {
+		ss = &senderState{from: from, parked: make(map[uint64]parkedTx)}
+		c.entries[from] = ss
+	}
+	ss.refs++
+	return ss
+}
+
+// release unpins the entry. A reservation that never got a nonce and holds
+// nothing is dropped, so a failed seed leaves nothing behind: the next Admit
+// reserves and reads again instead of finding a half-built entry.
+func (c *senderCache) release(ss *senderState) {
+	ss.refs--
+	if ss.refs > 0 || ss.next.known || len(ss.parked) > 0 {
+		return
+	}
+	delete(c.entries, ss.from)
+}
+
+func (c *senderCache) lookup(from common.Address) (*senderState, bool) {
+	ss, ok := c.entries[from]
+	return ss, ok
+}
+
+func (c *senderCache) size() int { return len(c.entries) }
+
+// evictLRU drops the least-recently-seen senders that evictable admits, while the
+// cache is over max. A held entry is never dropped however the policy votes: its
+// holder is off the lock reading the store and will come back to it.
+func (c *senderCache) evictLRU(max int, evictable func(*senderState) bool) {
+	for len(c.entries) > max {
+		var oldest *senderState
+		for _, ss := range c.entries {
+			if ss.refs > 0 || !evictable(ss) {
+				continue
+			}
+			if oldest == nil || ss.lastSeen.Before(oldest.lastSeen) {
+				oldest = ss
+			}
+		}
+		if oldest == nil {
+			return // nothing evictable; the cap gives way to correctness
+		}
+		delete(c.entries, oldest.from)
+	}
+}
+
 func newNonceGate(state stateReader, signer types.Signer, queue enqueuer) *nonceGate {
 	return &nonceGate{
 		state:        state,
 		signer:       signer,
 		queue:        queue,
-		senders:      make(map[common.Address]*senderState),
+		senders:      newSenderCache(),
 		byHash:       make(map[common.Hash]*types.Transaction),
 		maxPerSender: defaultMaxParkedPerSender,
 		maxSenders:   defaultMaxSenders,
@@ -95,42 +175,41 @@ func (g *nonceGate) Admit(ctx context.Context, tx *types.Transaction) error {
 	}
 
 	g.mu.Lock()
-	// Steady state: the sender is cached and we never touch the store. On a miss,
-	// reserve the entry before releasing the lock for the slow seed, so an Observe
-	// cannot commit for this sender and then evict it while we are away.
-	ss := g.senders[from]
-	if ss == nil {
-		ss = &senderState{parked: make(map[uint64]parkedTx), seeding: true}
-		g.senders[from] = ss
-		g.evictLRU() // skips seeding entries, so it never drops the reservation
+	// Deferred LIFO: release runs first, with the lock still held, then the unlock.
+	defer g.mu.Unlock()
+	ss := g.senders.acquire(from)
+	defer g.senders.release(ss)
+
+	// Steady state: the sender is cached with a nonce and we never touch the store.
+	// Otherwise read it off the lock -- the reservation keeps an Observe that
+	// commits for this sender from evicting the entry while we are away. Concurrent
+	// Admits each read for themselves rather than trust a reservation that has no
+	// nonce yet, which they cannot read in any case.
+	next, seeded := ss.next.value()
+	if !seeded {
 		g.mu.Unlock()
 
 		seed, err := g.state.NonceAt(ctx, from, nil)
 
 		g.mu.Lock()
-		ss.seeding = false
 		if err != nil {
-			// Nothing was ever seeded, so leave no half-built entry behind.
-			if len(ss.parked) == 0 {
-				delete(g.senders, from)
-			}
-			g.mu.Unlock()
+			// The reservation still has no nonce, so release drops it rather than
+			// leaving a zero behind for the next Admit to read as a real one.
 			return fmt.Errorf("look up nonce: %w", err)
 		}
-		// An Observe during the read advanced next from a commit, which is newer
-		// than anything the store could have told us. Never move it backwards.
-		if seed > ss.next {
-			ss.next = seed
-		}
+		// An Observe during the read may already have raised it past our seed, and
+		// a commit is newer than anything the store could have told us.
+		ss.next.raise(seed)
+		next, _ = ss.next.value()
+		g.evictLRU() // cannot drop ss: we still hold it
 	}
-	defer g.mu.Unlock()
 
 	ss.lastSeen = g.now()
 
 	switch {
-	case tx.Nonce() < ss.next:
-		return fmt.Errorf("%w: next nonce %d, tx nonce %d", ethcore.ErrNonceTooLow, ss.next, tx.Nonce())
-	case tx.Nonce() == ss.next:
+	case tx.Nonce() < next:
+		return fmt.Errorf("%w: next nonce %d, tx nonce %d", ethcore.ErrNonceTooLow, next, tx.Nonce())
+	case tx.Nonce() == next:
 		g.queue.Enqueue(tx)
 		return nil
 	}
@@ -174,24 +253,26 @@ func (g *nonceGate) Observe(committed []domain.Transaction) {
 
 	now := g.now()
 	for from, n := range highest {
-		ss := g.senders[from]
-		if ss == nil {
-			// Persist every committed sender, even one never admitted here.
-			ss = &senderState{parked: make(map[uint64]parkedTx)}
-			g.senders[from] = ss
-		}
-		if n+1 > ss.next {
-			ss.next = n + 1
-		}
+		// Persist every committed sender, even one never admitted here: a
+		// commit-derived nonce is authoritative, so the entry needs no seeding.
+		ss := g.senders.acquire(from)
+		ss.next.raise(n + 1)
 		ss.lastSeen = now
+		next, _ := ss.next.value() // set by the raise above
+
+		// Promote even when this block did not move the nonce. A seed that landed
+		// while the block was in flight may already have raised it past a parked
+		// transaction that is now ready, and this is the only signal that will ever
+		// release it: Admit enqueues its own transaction and never promotes another.
 		for nonce := range ss.parked {
-			if nonce < ss.next {
+			if nonce < next {
 				g.unpark(ss, nonce)
 			}
 		}
-		if tx := g.unpark(ss, ss.next); tx != nil {
+		if tx := g.unpark(ss, next); tx != nil {
 			g.queue.Enqueue(tx)
 		}
+		g.senders.release(ss)
 	}
 	g.evictLRU()
 }
@@ -234,23 +315,11 @@ func (g *nonceGate) evictExpiredParked(ss *senderState) {
 	}
 }
 
-// evictLRU drops least-recently-seen senders with no parked txs while over the cap.
+// evictLRU bounds the sender cache. A sender holding parked txs stays however far
+// over the cap we are: dropping it strands them and leaks their byHash entries.
+// Caller holds g.mu.
 func (g *nonceGate) evictLRU() {
-	for len(g.senders) > g.maxSenders {
-		var oldest common.Address
-		var oldestSeen time.Time
-		found := false
-		for from, ss := range g.senders {
-			if len(ss.parked) > 0 || ss.seeding {
-				continue
-			}
-			if !found || ss.lastSeen.Before(oldestSeen) {
-				oldest, oldestSeen, found = from, ss.lastSeen, true
-			}
-		}
-		if !found {
-			return
-		}
-		delete(g.senders, oldest)
-	}
+	g.senders.evictLRU(g.maxSenders, func(ss *senderState) bool {
+		return len(ss.parked) == 0
+	})
 }
