@@ -379,9 +379,9 @@ func TestNonceGate_SeedFailureLeavesNoSender(t *testing.T) {
 // straight through.
 func blockFirstRead(state *stubState) (seeding <-chan struct{}, release func()) {
 	started, gate := make(chan struct{}), make(chan struct{})
-	var reads int32
+	var reads atomic.Int32
 	state.onRead = func() {
-		if atomic.AddInt32(&reads, 1) == 1 {
+		if reads.Add(1) == 1 {
 			close(started)
 			<-gate
 		}
@@ -860,7 +860,7 @@ func TestNonceGate_ConcurrentParkRespectsGlobalCap(t *testing.T) {
 	keys := make([]*ecdsa.PrivateKey, n)
 	txs := make([]*types.Transaction, n)
 	state := newStubState()
-	for i := 0; i < n; i++ {
+	for i := range n {
 		keys[i] = newKey(t)
 		state.set(senderAddr(keys[i]), 0)
 		txs[i] = newValidTx(t, keys[i], validTxOpts{nonce: 1})
@@ -870,7 +870,7 @@ func TestNonceGate_ConcurrentParkRespectsGlobalCap(t *testing.T) {
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(tx *types.Transaction) {
 			defer wg.Done()
