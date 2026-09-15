@@ -30,6 +30,7 @@ import (
 	"github.com/hyperledger/fabric-x-evm/endorser/execution"
 	estorage "github.com/hyperledger/fabric-x-evm/endorser/storage"
 	"github.com/hyperledger/fabric-x-evm/gateway/api"
+	"github.com/hyperledger/fabric-x-evm/gateway/api/filters"
 	"github.com/hyperledger/fabric-x-evm/gateway/config"
 	"github.com/hyperledger/fabric-x-evm/gateway/core"
 	"github.com/hyperledger/fabric-x-evm/gateway/storage"
@@ -46,6 +47,7 @@ type App struct {
 	synchronizer  Synchronizer
 	gateway       *core.Gateway
 	chain         *core.Chain
+	filterAPI     *filters.FilterAPI
 	rpcServer     *rpc.Server
 	httpServer    *http.Server
 }
@@ -223,10 +225,13 @@ func buildApp(ctx context.Context, cfg config.Config, gwSigner sdk.Signer, logge
 		return nil, err
 	}
 
+	filterAPI := filters.NewFilterAPI(gateway)
+
 	// Chain must be called before gateway, to persist blocks before marking transactions complete.
-	handlers := append(extraHandlers, chain, gateway)
+	handlers := append(extraHandlers, filterAPI, chain, gateway)
 	synchronizer, err := NewSynchronizer(cfg.Network.Protocol, chain, cfg.Network.Channel, cfg.Network.Namespace, cfg.Committer.ToPeerConf(), gwSigner, logger, handlers...)
 	if err != nil {
+		filterAPI.Close()
 		return nil, fmt.Errorf("failed to create synchronizer: %w", err)
 	}
 
@@ -239,18 +244,21 @@ func buildApp(ctx context.Context, cfg config.Config, gwSigner sdk.Signer, logge
 
 		testAccountMgr, err := testimpl.LoadTestAccounts(test.accountsPath)
 		if err != nil {
+			filterAPI.Close()
 			return nil, fmt.Errorf("failed to load test accounts: %w", err)
 		}
 
 		// Pre-fund known Hardhat test EOAs so value transfers pass the balance
 		// check (issue #254). Test RPC / testnode only. Production accounts stay at zero.
 		if err := testimpl.FundTestAccounts(ctx, test.kvs, cfg.Network.Namespace, testAccountMgr.Addresses, testimpl.DefaultTestAccountBalance); err != nil {
+			filterAPI.Close()
 			return nil, fmt.Errorf("failed to fund test accounts: %w", err)
 		}
 		appLogger.Infof("Funded %d test accounts with %s wei each", len(testAccountMgr.Addresses), testimpl.DefaultTestAccountBalance.String())
 
 		revertibleKVS, ok := test.kvs.(estorage.Revertible)
 		if !ok {
+			filterAPI.Close()
 			return nil, fmt.Errorf("test RPC enabled but the endorser KVS is not Revertible")
 		}
 
@@ -261,26 +269,31 @@ func buildApp(ctx context.Context, cfg config.Config, gwSigner sdk.Signer, logge
 		// of the test RPC surface rather than an option on it, so a testRPCDeps
 		// without the builders it needs is a wiring bug, not a reduced mode.
 		if len(test.builders) == 0 {
+			filterAPI.Close()
 			return nil, fmt.Errorf("test RPC enabled but no endorsement builders were supplied")
 		}
 		normProtocol, err := common.NormalizeProtocol(cfg.Network.Protocol)
 		if err != nil {
+			filterAPI.Close()
 			return nil, fmt.Errorf("failed to normalize protocol: %w", err)
 		}
 		statePrimer, err := primer.NewStatePrimer(gateway, submitters[0], test.kvs, cfg.Network.Namespace,
 			gwSigner, test.builders, cfg.Network.Channel, cfg.Network.NsVersion, normProtocol == common.ProtocolFabricX)
 		if err != nil {
+			filterAPI.Close()
 			return nil, fmt.Errorf("failed to create state primer: %w", err)
 		}
 
-		rpcServer, err = testimpl.NewTestServer(gateway, testAccountMgr.Addresses, testAccountMgr.PrivateKeys, revertibleKVS, snapshotStore, gateway.TxQueue, statePrimer)
+		rpcServer, err = testimpl.NewTestServer(gateway, testAccountMgr.Addresses, testAccountMgr.PrivateKeys, revertibleKVS, snapshotStore, gateway.TxQueue, statePrimer, filterAPI)
 		if err != nil {
+			filterAPI.Close()
 			return nil, err
 		}
 	} else {
 		// Production server without test methods
-		rpcServer, err = api.NewServer(gateway)
+		rpcServer, err = api.NewServer(gateway, filterAPI)
 		if err != nil {
+			filterAPI.Close()
 			return nil, err
 		}
 	}
@@ -290,6 +303,7 @@ func buildApp(ctx context.Context, cfg config.Config, gwSigner sdk.Signer, logge
 		synchronizer: synchronizer,
 		gateway:      gateway,
 		chain:        chain,
+		filterAPI:    filterAPI,
 		rpcServer:    rpcServer,
 	}, nil
 }
@@ -359,6 +373,12 @@ func (a *App) Shutdown() error {
 		appLogger.Warnf("chain close error: %v", err)
 	} else {
 		appLogger.Debug("chain closed")
+	}
+
+	if a.filterAPI != nil {
+		appLogger.Debug("closing filter API...")
+		a.filterAPI.Close()
+		appLogger.Debug("filter API closed")
 	}
 
 	// Close dialed endorser connections (split deployment only)
