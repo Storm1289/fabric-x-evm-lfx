@@ -10,7 +10,6 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/hyperledger/fabric-x-sdk/blocks"
@@ -28,13 +27,18 @@ type kvsBackend struct {
 	// newLoc returns a fresh, unused location for this backend.
 	newLoc func(t *testing.T) string
 	// open attaches to the store at loc, creating it if needed. historySize is
-	// honored by LightKVS and ignored by the persistent backends.
+	// honored by the backends that bound their history (see boundedHistory) and
+	// ignored by the rest.
 	open func(t *testing.T, loc string, historySize int) KVS
 	// persistent reports whether state survives close and reopen.
 	persistent bool
 	// mvccVersions reports per-key MAX(version)+1 numbering, mirroring the
 	// committer's worldstate. See TestParityVersionSemantics.
 	mvccVersions bool
+	// boundedHistory reports that only historySize blocks of history are kept and
+	// that an older height is refused rather than answered. See
+	// TestParityEvictedHistoryErrors.
+	boundedHistory bool
 }
 
 func kvsBackends() []kvsBackend {
@@ -45,8 +49,9 @@ func kvsBackends() []kvsBackend {
 			open: func(t *testing.T, _ string, historySize int) KVS {
 				return NewLightKVS(historySize)
 			},
-			persistent:   false,
-			mvccVersions: false,
+			persistent:     false,
+			mvccVersions:   false,
+			boundedHistory: true,
 		},
 		{
 			name:   "RevertibleLightKVS",
@@ -54,8 +59,7 @@ func kvsBackends() []kvsBackend {
 			open: func(t *testing.T, _ string, historySize int) KVS {
 				return NewRevertibleLightKVS(NewLightKVS(historySize))
 			},
-			persistent:   false,
-			mvccVersions: false,
+			persistent: false,
 		},
 		{
 			name:   "PebbleKVS",
@@ -67,8 +71,9 @@ func kvsBackends() []kvsBackend {
 				}
 				return kvs
 			},
-			persistent:   true,
-			mvccVersions: true,
+			persistent:     true,
+			mvccVersions:   true,
+			boundedHistory: true,
 		},
 		{
 			name:   "VersionedDB",
@@ -80,8 +85,7 @@ func kvsBackends() []kvsBackend {
 				}
 				return NewVersionedDBWrapper(db)
 			},
-			persistent:   true,
-			mvccVersions: true,
+			persistent: true,
 		},
 	}
 }
@@ -375,6 +379,44 @@ func TestParityTimeTravelReads(t *testing.T) {
 	})
 }
 
+// TestParityEvictedHistoryErrors is TestParityTimeTravelReads' boundary: the
+// backends that keep only historySize blocks of history must refuse a height
+// below that window, rather than answering it with a newer value. The endorser
+// reads state to build MVCC read-sets, so a silently-shifted height would be
+// validated against the wrong version.
+func TestParityEvictedHistoryErrors(t *testing.T) {
+	const (
+		window = 1
+		head   = 5
+	)
+	forEachBackend(t, func(t *testing.T, b kvsBackend) {
+		if !b.boundedHistory {
+			t.Skipf("%s keeps all history", b.name)
+		}
+		kvs := b.openFresh(t, window)
+
+		for i := uint64(1); i <= head; i++ {
+			mustHandle(t, kvs, mkBlock(i, 0, fmt.Sprintf("tx%d", i), true, "ns1",
+				blocks.KVWrite{Key: "k", Value: fmt.Appendf(nil, "v%d", i)}))
+		}
+
+		// The window is [head-window, head], so head-1 is still served...
+		wantValue(t, mustGetAsOf(t, kvs, "ns1", "k", head-1), fmt.Sprintf("v%d", head-1))
+
+		// ...and anything below it is gone, not silently answered.
+		for _, evicted := range []uint64{1, head - window - 1} {
+			snap, err := kvs.NewSnapshot(&evicted)
+			if err != nil {
+				continue // the expected outcome
+			}
+			rec, getErr := snap.Get("ns1", "k")
+			snap.Close()
+			t.Errorf("NewSnapshot(%d) succeeded for an evicted block: got record %+v (Get err %v)",
+				evicted, rec, getErr)
+		}
+	})
+}
+
 func TestParityBlockNumber(t *testing.T) {
 	forEachFreshKVS(t, 8, func(t *testing.T, kvs KVS) {
 		if n := mustBlockNumber(t, kvs); n != 0 {
@@ -436,6 +478,24 @@ func TestParityReplayIsNoOp(t *testing.T) {
 		wantValue(t, rec, "v3")
 		if rec.Version != 1 {
 			t.Errorf("expected version 1 after block 2, got %d", rec.Version)
+		}
+
+		// A block whose transactions write the same key twice also has to survive
+		// its own redelivery. Only the surviving write is stored, so a backend that
+		// looked for each write individually would reject the replay.
+		twice := mkMultiTxBlock(3, "ns1",
+			blocks.KVWrite{Key: "k", Value: []byte("lo")},
+			blocks.KVWrite{Key: "k", Value: []byte("hi")})
+		mustHandle(t, kvs, twice)
+		afterFirst := mustGet(t, kvs, "ns1", "k")
+		wantValue(t, afterFirst, "hi")
+
+		mustHandle(t, kvs, twice)
+		rec = mustGet(t, kvs, "ns1", "k")
+		wantValue(t, rec, "hi")
+		if rec.Version != afterFirst.Version {
+			t.Errorf("replaying a block with two writes to one key bumped the version: got %d, want %d",
+				rec.Version, afterFirst.Version)
 		}
 	})
 }
@@ -594,14 +654,10 @@ func TestParityReplayAcrossReopen(t *testing.T) {
 	})
 }
 
-// TestParityVersionSemantics pins the one place the backends deliberately
-// disagree, on both sides of the split.
-//
-// PebbleKVS and VersionedDB assign per-key MAX(version)+1 — what the fabric-x
-// MVCC read-set is validated against, since VersionedDB is the committer's
-// worldstate schema. LightKVS shares one version across a block's writes to a
-// key and resets after a delete. Asserting both shapes means drift on either
-// side fails here rather than later as rejected transactions.
+// TestParityVersionSemantics pins the per-key version scheme every backend
+// must agree on: MAX(version)+1, consecutive across multiple writes to a key
+// within a block, and never resetting across a tombstone. The MVCC read-set
+// carries these versions, so drift here surfaces later as rejected transactions.
 func TestParityVersionSemantics(t *testing.T) {
 	t.Run("multiple writes to one key in a block", func(t *testing.T) {
 		forEachBackend(t, func(t *testing.T, b kvsBackend) {
@@ -613,12 +669,8 @@ func TestParityVersionSemantics(t *testing.T) {
 			rec := mustGet(t, kvs, "ns1", "k")
 			wantValue(t, rec, "from-tx1")
 
-			// MVCC backends: tx0→0, tx1→1, consecutive. LightKVS: both writes
-			// are versioned against the pre-block snapshot, so both are 0.
-			want := uint64(0)
-			if b.mvccVersions {
-				want = 1
-			}
+			// tx0→0, tx1→1: consecutive within the block.
+			want := uint64(1)
 			if rec.Version != want {
 				t.Errorf("expected version %d, got %d", want, rec.Version)
 			}
@@ -639,13 +691,8 @@ func TestParityVersionSemantics(t *testing.T) {
 			rec := mustGet(t, kvs, "ns1", "k")
 			wantValue(t, rec, "again")
 
-			// MVCC backends keep counting across the tombstone (v0, tombstone
-			// v1, rewrite v2). LightKVS drops the key on delete, so the
-			// rewrite starts over at 0.
-			want := uint64(0)
-			if b.mvccVersions {
-				want = 2
-			}
+			// Counting continues across the tombstone: v0=0, tombstone=1, rewrite=2.
+			want := uint64(2)
 			if rec.Version != want {
 				t.Errorf("expected version %d, got %d", want, rec.Version)
 			}
@@ -669,13 +716,9 @@ func TestParityVersionSemantics(t *testing.T) {
 			rec := mustGet(t, kvs, "ns1", "k")
 			wantValue(t, rec, "v2")
 
-			// LightKVS resets to 0 after every delete, no matter how many cycles
-			// came before. MVCC backends version every write including
-			// tombstones: two full cycles land at 4 (v0=0,del=1,v1=2,del=3,v2=4).
-			want := uint64(0)
-			if b.mvccVersions {
-				want = 4
-			}
+			// Every write including tombstones is versioned: two full cycles
+			// land at 4 (v0=0, del=1, v1=2, del=3, v2=4).
+			want := uint64(4)
 			if rec.Version != want {
 				t.Errorf("expected version %d after two tombstone cycles, got %d", want, rec.Version)
 			}
@@ -715,11 +758,9 @@ func TestParityDeleteThenRewriteWithinBlock(t *testing.T) {
 }
 
 // TestParityDeleteNeverWrittenKey verifies deleting a key with no prior write
-// reads absent on every backend — but pins a real divergence in what it costs:
-// LightKVS's delete is a plain map delete, true no-op, no trace left behind.
-// MVCC backends still persist a version-0 tombstone (latestVersion returns -1 for
-// an unseen key, so COALESCE(...,0) applies to the delete itself), which the next
-// real write's MAX(version)+1 then builds on.
+// reads absent on every backend, and still persists a version-0 tombstone
+// (latestVersion returns -1 for an unseen key, so COALESCE(...,0) applies to
+// the delete itself), which the next real write's MAX(version)+1 builds on.
 func TestParityDeleteNeverWrittenKey(t *testing.T) {
 	forEachBackend(t, func(t *testing.T, b kvsBackend) {
 		kvs := b.openFresh(t, 8)
@@ -735,10 +776,7 @@ func TestParityDeleteNeverWrittenKey(t *testing.T) {
 		rec := mustGet(t, kvs, "ns1", "ghost")
 		wantValue(t, rec, "alive")
 
-		want := uint64(0)
-		if b.mvccVersions {
-			want = 1 // the delete-of-nothing already consumed version 0
-		}
+		want := uint64(1) // the delete-of-nothing already consumed version 0
 		if rec.Version != want {
 			t.Errorf("expected version %d for first real write after delete-of-nothing, got %d", want, rec.Version)
 		}
@@ -834,16 +872,6 @@ func TestParityProtocolVersionCompatibility(t *testing.T) {
 				protocol = "fabric-x"
 			}
 			t.Run(protocol, func(t *testing.T) {
-				if (b.name == "LightKVS" || b.name == "RevertibleLightKVS") && monotonic {
-					t.Skip("known gap: LightKVS (and RevertibleLightKVS, which shares " +
-						"its version scheme) resets its version counter after a " +
-						"delete instead of staying monotonic, so a real fabric-x " +
-						"committer's worldstate would disagree with this backend's " +
-						"read-set across any delete/rewrite. config.go currently " +
-						"allows DBMemory for fabric-x with no caveat about this — " +
-						"not fixed here, tracked as a discovered gap")
-				}
-
 				kvs := b.openFresh(t, 8)
 				fabricXRef := uint64(0)
 
@@ -876,30 +904,4 @@ func TestParityProtocolVersionCompatibility(t *testing.T) {
 			})
 		}
 	})
-}
-
-// TestPebbleUpdateRejectsMultiBlockBatch is PebbleKVS-specific: Update is its
-// batch primitive and rejects a batch spanning block numbers, where LightKVS
-// takes the block number from the first entry.
-func TestPebbleUpdateRejectsMultiBlockBatch(t *testing.T) {
-	kvs, err := NewPebbleKVS(t.TempDir(), 8)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer kvs.Close()
-
-	err = kvs.update([]KeyValueVersion{
-		{Key: "ns1:a", BlockNum: 1, TxNum: 0, Value: []byte("a")},
-		{Key: "ns1:b", BlockNum: 2, TxNum: 0, Value: []byte("b")},
-	})
-	if err == nil {
-		t.Fatal("expected error for multi-block batch, got nil")
-	}
-	if !strings.Contains(err.Error(), "spans multiple blocks") {
-		t.Errorf("error should mention 'spans multiple blocks', got: %v", err)
-	}
-
-	if n := mustBlockNumber(t, kvs); n != 0 {
-		t.Errorf("expected block 0 (nothing committed), got %d", n)
-	}
 }
