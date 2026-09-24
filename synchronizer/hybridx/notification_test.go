@@ -31,7 +31,7 @@ func (s *stubHandler) Handle(_ context.Context, b blocks.Block) error {
 	return s.err
 }
 
-// evmEvent builds a committed event as the SDK delivers it: the ChaincodeInput has
+// evmEvent builds a committed event as the SDK delivers it: the metadata has
 // already been decoded at the network boundary, so InputArgs holds the proposal-type
 // byte in Args[0] and the raw ethereum-tx bytes (opaque to the dispatcher) in Args[1].
 func evmEvent(txID string, txNum int64, status blocks.Status, propType common.ProposalType, ethTxBytes []byte) notification.CommittedTxEvent {
@@ -76,8 +76,8 @@ func TestHandleBatch_EmptyBatchDoesNothing(t *testing.T) {
 }
 
 // TestHandleBatch_SkipsEventWithoutEthTx covers every way an event can fail to carry
-// an ethereum transaction. Metadata that was absent, or a ChaincodeInput that did not
-// parse, both reach us from the SDK as an event with no InputArgs at all: the
+// an ethereum transaction. Metadata that was absent, or that carried no args,
+// both reach us from the SDK as an event with no InputArgs at all: the
 // dispatcher sees only that outcome, never the wire format behind it.
 func TestHandleBatch_SkipsEventWithoutEthTx(t *testing.T) {
 	for _, tc := range []struct {

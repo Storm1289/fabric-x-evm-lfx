@@ -66,14 +66,10 @@ func TestUnmarshalEvents(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Marshal the logs
-			logs, _ := json.Marshal(tt.logs)
-			event, err := MarshalLogs(logs, "chaincode", "tx123")
-			if err != nil {
-				t.Fatalf("MarshalEvents() error = %v", err)
-			}
+			// The endorser emits the JSON logs as the event bytes; the SDK
+			// carries them through to the block unchanged.
+			event, _ := json.Marshal(tt.logs)
 
-			// Unmarshal them back
 			got, err := UnmarshalLogs(event)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("UnmarshalEvents() error = %v, wantErr %v", err, tt.wantErr)
@@ -117,8 +113,12 @@ func TestUnmarshalEvents_InvalidInput(t *testing.T) {
 		input []byte
 	}{
 		{
-			name:  "invalid proto",
+			name:  "not json",
 			input: []byte{0xff, 0xff, 0xff},
+		},
+		{
+			name:  "truncated json",
+			input: []byte(`[{"Address":`),
 		},
 	}
 
@@ -129,18 +129,6 @@ func TestUnmarshalEvents_InvalidInput(t *testing.T) {
 				t.Error("expected error for invalid input")
 			}
 		})
-	}
-}
-
-// ---- MarshalLogs: early-return branch ----
-
-func TestMarshalLogs_EmptyLogsReturnsNil(t *testing.T) {
-	out, err := MarshalLogs(nil, "chaincode", "tx-1")
-	if err != nil {
-		t.Fatalf("MarshalLogs err: %v", err)
-	}
-	if out != nil {
-		t.Errorf("want nil, got %v", out)
 	}
 }
 
@@ -156,14 +144,8 @@ func TestUnmarshalLogs_EmptyInputReturnsEmptySlice(t *testing.T) {
 	}
 }
 
-func TestUnmarshalLogs_EmptyPayloadReturnsEmptySlice(t *testing.T) {
-	// A ChaincodeEvent with no Payload should yield an empty slice, not an error.
-	ev := &peer.ChaincodeEvent{ChaincodeId: "cc", TxId: "tx-1", EventName: "log"}
-	b, err := proto.Marshal(ev)
-	if err != nil {
-		t.Fatalf("marshal setup: %v", err)
-	}
-	got, err := UnmarshalLogs(b)
+func TestUnmarshalLogs_EmptyJSONArrayReturnsEmptySlice(t *testing.T) {
+	got, err := UnmarshalLogs([]byte("[]"))
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -172,15 +154,52 @@ func TestUnmarshalLogs_EmptyPayloadReturnsEmptySlice(t *testing.T) {
 	}
 }
 
-func TestUnmarshalLogs_BadJSONPayloadReturnsError(t *testing.T) {
-	// A well-formed ChaincodeEvent whose Payload is not valid JSON should error.
-	ev := &peer.ChaincodeEvent{Payload: []byte{0xff, 0xff}, ChaincodeId: "cc", TxId: "tx-1"}
-	b, err := proto.Marshal(ev)
+// TestUnmarshalLogs_BothBackendShapes covers the one place the two protocols
+// still differ. Fabric-X carries the endorser's event verbatim, while Fabric
+// has no metadata field and the SDK's builder wraps it in a ChaincodeEvent
+// named "log". Both must decode to the same logs.
+func TestUnmarshalLogs_BothBackendShapes(t *testing.T) {
+	want := []state.Log{{Address: []byte{0x01}, Topics: [][]byte{{0x0a}}, Data: []byte{0xff}}}
+	fabricx, err := json.Marshal(want)
 	if err != nil {
 		t.Fatalf("marshal setup: %v", err)
 	}
-	if _, err := UnmarshalLogs(b); err == nil {
-		t.Fatal("expected json.Unmarshal error")
+	fabric, err := proto.Marshal(&peer.ChaincodeEvent{Payload: fabricx, EventName: "log"})
+	if err != nil {
+		t.Fatalf("marshal setup: %v", err)
+	}
+
+	for name, event := range map[string][]byte{"fabric-x": fabricx, "fabric": fabric} {
+		t.Run(name, func(t *testing.T) {
+			got, err := UnmarshalLogs(event)
+			if err != nil {
+				t.Fatalf("UnmarshalLogs: %v", err)
+			}
+			if len(got) != 1 || !bytes.Equal(got[0].Data, want[0].Data) {
+				t.Errorf("got %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
+// TestIsRevertEvent_BothBackendShapes is the same split for revert detection:
+// a revert must be recognised whether or not Fabric's wrapper is around it.
+func TestIsRevertEvent_BothBackendShapes(t *testing.T) {
+	fabricx, err := MarshalRevert([]byte("boom"), "cc", "tx-1")
+	if err != nil {
+		t.Fatalf("MarshalRevert: %v", err)
+	}
+	fabric, err := proto.Marshal(&peer.ChaincodeEvent{Payload: fabricx, EventName: "log"})
+	if err != nil {
+		t.Fatalf("marshal setup: %v", err)
+	}
+
+	for name, event := range map[string][]byte{"fabric-x": fabricx, "fabric": fabric} {
+		t.Run(name, func(t *testing.T) {
+			if !IsRevertEvent(event) {
+				t.Error("expected revert event detected")
+			}
+		})
 	}
 }
 
@@ -222,51 +241,48 @@ func TestIsRevertEvent_EmptyReturnsFalse(t *testing.T) {
 	}
 }
 
-func TestIsRevertEvent_BadOuterProtoReturnsFalse(t *testing.T) {
+func TestIsRevertEvent_BadProtoReturnsFalse(t *testing.T) {
 	if IsRevertEvent([]byte{0xff, 0xff, 0xff}) {
 		t.Error("garbage bytes should be false")
 	}
 }
 
-func TestIsRevertEvent_BadInnerProtoReturnsFalse(t *testing.T) {
-	// Outer parses fine but its Payload is not a valid ChaincodeEvent.
-	outer := &peer.ChaincodeEvent{Payload: []byte{0xff, 0xff}, EventName: "log"}
-	b, err := proto.Marshal(outer)
+// TestIsRevertEvent_SuccessLogsReturnFalse is the regression guard for the
+// failure this change fixes. A successful transaction carries JSON logs in the
+// event field, not a ChaincodeEvent. If the unwrapping is off by a layer this
+// reports false for a genuine revert too, and a revert mines as a success -
+// silently, because nothing errors.
+func TestIsRevertEvent_SuccessLogsReturnFalse(t *testing.T) {
+	logs, err := json.Marshal([]state.Log{{Address: []byte{0x01}, Data: []byte{0xff}}})
 	if err != nil {
 		t.Fatalf("marshal setup: %v", err)
 	}
-	if IsRevertEvent(b) {
-		t.Error("bad inner proto should be false")
+	if IsRevertEvent(logs) {
+		t.Error("JSON logs must not be detected as a revert")
+	}
+	if IsExecFailureEvent(logs) {
+		t.Error("JSON logs must not be detected as an exec failure")
 	}
 }
 
 func TestIsRevertEvent_WithRevertPrefixReturnsTrue(t *testing.T) {
-	// Build the wire shape MarshalRevert wraps into: an outer ChaincodeEvent
-	// whose Payload is a marshalled inner ChaincodeEvent with the revert: prefix.
-	inner, err := MarshalRevert([]byte("payload"), "cc", "tx-1")
+	// MarshalRevert's output reaches the block as-is.
+	event, err := MarshalRevert([]byte("payload"), "cc", "tx-1")
 	if err != nil {
 		t.Fatalf("MarshalRevert: %v", err)
 	}
-	outer, err := proto.Marshal(&peer.ChaincodeEvent{Payload: inner, EventName: "log"})
-	if err != nil {
-		t.Fatalf("outer marshal: %v", err)
-	}
-	if !IsRevertEvent(outer) {
+	if !IsRevertEvent(event) {
 		t.Error("expected revert event detected")
 	}
 }
 
 func TestIsRevertEvent_WithoutRevertPrefixReturnsFalse(t *testing.T) {
-	// Inner EventName is "log", not "revert:*".
-	inner, err := proto.Marshal(&peer.ChaincodeEvent{Payload: []byte("x"), EventName: "log"})
+	// EventName is "log", not "revert:*".
+	event, err := proto.Marshal(&peer.ChaincodeEvent{Payload: []byte("x"), EventName: "log"})
 	if err != nil {
-		t.Fatalf("inner marshal: %v", err)
+		t.Fatalf("marshal setup: %v", err)
 	}
-	outer, err := proto.Marshal(&peer.ChaincodeEvent{Payload: inner, EventName: "log"})
-	if err != nil {
-		t.Fatalf("outer marshal: %v", err)
-	}
-	if IsRevertEvent(outer) {
+	if IsRevertEvent(event) {
 		t.Error("non-revert event should be false")
 	}
 }
@@ -302,29 +318,21 @@ func TestIsExecFailureEvent_EmptyReturnsFalse(t *testing.T) {
 }
 
 func TestIsExecFailureEvent_WithExecFailurePrefixReturnsTrue(t *testing.T) {
-	inner, err := MarshalExecFailure(nil, "cc", "tx-1")
+	event, err := MarshalExecFailure(nil, "cc", "tx-1")
 	if err != nil {
 		t.Fatalf("MarshalExecFailure: %v", err)
 	}
-	outer, err := proto.Marshal(&peer.ChaincodeEvent{Payload: inner, EventName: "log"})
-	if err != nil {
-		t.Fatalf("outer marshal: %v", err)
-	}
-	if !IsExecFailureEvent(outer) {
+	if !IsExecFailureEvent(event) {
 		t.Error("expected exec-failure event detected")
 	}
 }
 
 func TestIsExecFailureEvent_RevertEventReturnsFalse(t *testing.T) {
-	inner, err := MarshalRevert([]byte("payload"), "cc", "tx-1")
+	event, err := MarshalRevert([]byte("payload"), "cc", "tx-1")
 	if err != nil {
 		t.Fatalf("MarshalRevert: %v", err)
 	}
-	outer, err := proto.Marshal(&peer.ChaincodeEvent{Payload: inner, EventName: "log"})
-	if err != nil {
-		t.Fatalf("outer marshal: %v", err)
-	}
-	if IsExecFailureEvent(outer) {
+	if IsExecFailureEvent(event) {
 		t.Error("revert event should not be an exec-failure event")
 	}
 }

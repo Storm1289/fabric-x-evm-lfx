@@ -173,3 +173,5 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
+
+replace github.com/hyperledger/fabric-x-sdk => github.com/arner/fabric-x-sdk v0.0.0-20260918152359-79b4f70e0b10
