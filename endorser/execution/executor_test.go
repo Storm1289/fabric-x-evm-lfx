@@ -328,9 +328,9 @@ func TestEVMEngineExecute_NonRevertFailureIsCommittedNotRejected(t *testing.T) {
 	if len(res.RWS.Writes) == 0 {
 		t.Error("expected RWS to record the sender's nonce increment, got no writes")
 	}
-	// res.Event reaches the block unchanged, so it is read back exactly as
+	// res.EventName reaches the block unchanged, so it is read back exactly as
 	// IsExecFailureEvent sees it on the gateway side.
-	if !common.IsExecFailureEvent(res.Event) {
-		t.Error("expected Event to be a marked exec-failure event")
+	if !common.IsExecFailureEvent(res.EventName) {
+		t.Error("expected EventName to mark an exec failure")
 	}
 }

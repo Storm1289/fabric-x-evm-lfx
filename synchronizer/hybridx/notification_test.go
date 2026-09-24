@@ -185,13 +185,13 @@ func TestHandleBatch_MultipleHandlersAllReceive(t *testing.T) {
 
 // TestHandleBatch_ForwardsEvents verifies that the revert event (and any other event)
 // reaches the handler untouched. The SDK lifts it out of the wire format into
-// Transaction.Events, exactly as the block parser does on the delivery path; the
+// Transaction.Event, exactly as the block parser does on the delivery path; the
 // dispatcher must pass it straight through. A nil slice means no event was emitted.
 func TestHandleBatch_ForwardsEvents(t *testing.T) {
 	eventPayload := []byte("some-event-bytes")
 
 	withEvent := committedEVMEvent("evm-with-event")
-	withEvent.Events = eventPayload
+	withEvent.Event = eventPayload
 
 	h := &stubHandler{}
 	d := NewAllTxBatchDispatcher(h)
@@ -206,9 +206,9 @@ func TestHandleBatch_ForwardsEvents(t *testing.T) {
 	require.Len(t, h.seen, 1)
 	require.Len(t, h.seen[0].Transactions, 2)
 
-	assert.Equal(t, eventPayload, h.seen[0].Transactions[0].Events,
+	assert.Equal(t, eventPayload, h.seen[0].Transactions[0].Event,
 		"event bytes must be forwarded as-is")
-	assert.Nil(t, h.seen[0].Transactions[1].Events,
+	assert.Nil(t, h.seen[0].Transactions[1].Event,
 		"a tx that emitted no event must leave Events nil")
 }
 

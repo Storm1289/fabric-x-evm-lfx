@@ -89,7 +89,7 @@ func TestHandle_ReprocessingSameBlockKeepsIndexesAndTrieStable(t *testing.T) {
 			Number:    0,
 			Status:    blocks.StatusCommitted,
 			InputArgs: [][]byte{{byte(fc.ProposalTypeEVMTx)}, txBytes},
-			Events:    resilienceEvents(t, "fabric-tx-1", logs),
+			Event:     resilienceEvents(t, "fabric-tx-1", logs),
 			NsRWS: []blocks.NsReadWriteSet{{
 				Namespace: "evmcc",
 				RWS: blocks.ReadWriteSet{Writes: []blocks.KVWrite{
