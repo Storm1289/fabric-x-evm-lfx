@@ -52,6 +52,10 @@ type Synchronizer struct {
 	// Timeout bounds how long Run waits for the initial sync to complete
 	// before returning an error. Zero means DefaultSyncTimeout.
 	Timeout time.Duration `mapstructure:"timeout" yaml:"timeout"`
+	// AllTxQueueDepth controls how many committed-block batches the
+	// notification stream buffers between the receive loop and the handler
+	// goroutine (fabric-x only). Zero means notification.DefaultQueueDepth.
+	AllTxQueueDepth int `mapstructure:"all-tx-queue-depth" yaml:"all-tx-queue-depth"`
 }
 
 // DefaultSyncTimeout is used when Synchronizer.Timeout is unset.
@@ -141,9 +145,13 @@ func (cfg Config) Validate() error {
 	if cfg.Network.Namespace == "" {
 		errs = append(errs, errors.New("network.namespace is required"))
 	}
-	_, protocolErr := common.NormalizeProtocol(cfg.Network.Protocol)
+	protocol, protocolErr := common.NormalizeProtocol(cfg.Network.Protocol)
 	if protocolErr != nil {
 		errs = append(errs, protocolErr)
+	} else if protocol == common.ProtocolFabricX {
+		if _, err := cfg.Network.NsVersionUint64(); err != nil {
+			errs = append(errs, fmt.Errorf("network: %w", err))
+		}
 	}
 	if err := cfg.Committer.Validate(); err != nil {
 		errs = append(errs, fmt.Errorf("committer: %w", err))
