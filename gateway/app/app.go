@@ -232,7 +232,7 @@ func buildApp(ctx context.Context, cfg config.Config, gwSigner sdk.Signer, logge
 		// blocks reach handlers. hybridx switches to AllTxBatch after catch up, and that
 		// path drops empty blocks, so hardhat_mine would never advance eth_blockNumber.
 		// Switch back to hybridx after it picks up fabric-x-common 0.2.9+ empty block support.
-		syncer, errSync = synchronizer.NewDelivery(cfg.Network.Protocol, chain, cfg.Network.Channel, cfg.Committer.ToPeerConf(), gwSigner, logger, handlers...)
+		syncer, errSync = synchronizer.NewDelivery(cfg.Network.Protocol, chain, cfg.Network.Channel, cfg.Network.Namespace, cfg.Committer.ToPeerConf(), gwSigner, logger, handlers...)
 	} else {
 		syncer, errSync = synchronizer.New(cfg.Network.Protocol, chain, cfg.Network.Channel, cfg.Network.Namespace, cfg.Committer.ToPeerConf(), gwSigner, logger, cfg.Synchronizer.AllTxQueueDepth, handlers...)
 	}

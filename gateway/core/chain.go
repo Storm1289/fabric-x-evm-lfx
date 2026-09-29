@@ -150,8 +150,6 @@ func ConvertToDomain(b blocks.Block) domain.Block {
 
 	logIndex := int64(0) // logIndex is the index of the log in the block
 	for _, tx := range b.Transactions {
-		// TODO: filter on namespace?
-
 		// retrieve the Ethereum transaction from the chaincode invocation
 		if len(tx.InputArgs) < 2 || !bytes.Equal(tx.InputArgs[0], []byte{byte(fc.ProposalTypeEVMTx)}) {
 			// skip non-eth tx

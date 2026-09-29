@@ -42,7 +42,7 @@ type Synchronizer interface {
 // so that endorser state is applied before the gateway marks a transaction
 // complete.
 //
-// namespace is used by the fabric-x hybrid synchronizer to filter the notification stream.
+// Handlers only see transactions in namespace (see nsFilter).
 // queueDepth is passed to the hybridx AllTxStreamer; pass 0 to use the default.
 func New(protocol string, db network.BlockHeightReader, channel, namespace string, committer network.PeerConf, signer sdk.Signer, logger sdk.Logger, queueDepth int, handlers ...blocks.BlockHandler) (Synchronizer, error) {
 	protocol, err := common.NormalizeProtocol(protocol)
@@ -50,11 +50,16 @@ func New(protocol string, db network.BlockHeightReader, channel, namespace strin
 		return nil, err
 	}
 
+	if namespace == "" {
+		return nil, errors.New("namespace is required")
+	}
+	handler := nsFilter{namespace: namespace, handlers: handlers}
+
 	switch protocol {
 	case common.ProtocolFabric:
-		return nfab.NewSynchronizer(db, channel, committer, signer, logger, handlers...)
+		return nfab.NewSynchronizer(db, channel, committer, signer, logger, handler)
 	case common.ProtocolFabricX:
-		return hybridx.New(db, channel, namespace, committer, signer, logger, queueDepth, handlers...)
+		return hybridx.New(db, channel, namespace, committer, signer, logger, queueDepth, handler)
 	default:
 		return nil, fmt.Errorf("unsupported protocol: %q", protocol)
 	}
@@ -67,19 +72,54 @@ func New(protocol string, db network.BlockHeightReader, channel, namespace strin
 // Temporary for testnode: switch back to hybridx once it incorporates fabric-x-common
 // 0.2.9 and later (empty block notifications). Until then AllTxBatch drops empty blocks
 // after catch up, so eth_blockNumber never advances on CutBlock.
-func NewDelivery(protocol string, db network.BlockHeightReader, channel string, committer network.PeerConf, signer sdk.Signer, logger sdk.Logger, handlers ...blocks.BlockHandler) (Synchronizer, error) {
+func NewDelivery(protocol string, db network.BlockHeightReader, channel, namespace string, committer network.PeerConf, signer sdk.Signer, logger sdk.Logger, handlers ...blocks.BlockHandler) (Synchronizer, error) {
 	protocol, err := common.NormalizeProtocol(protocol)
 	if err != nil {
 		return nil, err
 	}
+	if namespace == "" {
+		return nil, errors.New("namespace is required")
+	}
+	handler := nsFilter{namespace: namespace, handlers: handlers}
+
 	switch protocol {
 	case common.ProtocolFabric:
-		return nfab.NewSynchronizer(db, channel, committer, signer, logger, handlers...)
+		return nfab.NewSynchronizer(db, channel, committer, signer, logger, handler)
 	case common.ProtocolFabricX:
-		return nfabx.NewSynchronizer(db, channel, committer, signer, logger, handlers...)
+		return nfabx.NewSynchronizer(db, channel, committer, signer, logger, handler)
 	default:
 		return nil, fmt.Errorf("unsupported protocol: %q", protocol)
 	}
+}
+
+// nsFilter hides other applications on the channel: it forwards each block with
+// only the transactions in namespace, trimmed to that namespace's read-write set.
+type nsFilter struct {
+	namespace string
+	handlers  []blocks.BlockHandler
+}
+
+// Handle implements blocks.BlockHandler. Blocks are forwarded even when empty so
+// block numbers stay aligned with the ledger.
+func (f nsFilter) Handle(ctx context.Context, b blocks.Block) error {
+	txs := make([]blocks.Transaction, 0, len(b.Transactions))
+	for _, tx := range b.Transactions {
+		for _, rws := range tx.NsRWS {
+			if rws.Namespace == f.namespace {
+				tx.NsRWS = []blocks.NsReadWriteSet{rws}
+				txs = append(txs, tx)
+				break
+			}
+		}
+	}
+	b.Transactions = txs
+
+	for _, h := range f.handlers {
+		if err := h.Handle(ctx, b); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // WaitUntilSynced blocks until sync reports Ready or timeout elapses, polling every 100ms.
