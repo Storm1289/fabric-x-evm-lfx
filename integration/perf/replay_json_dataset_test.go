@@ -213,7 +213,7 @@ func perfHandlerChain(completionTracker *TxCompletionTracker) integration.Handle
 		// bookkeeping on every commit without ever gating a submission.
 		// ends is caller-ordered [local, remotes...]; see test_helpers.go's
 		// defaultHandlerChain for the same convention.
-		gw, err := app.BuildGateway(ctx, ends[0], ends[1:], gwSigner, cfg.Network, tracker, submitters, cfg.Gateway.SubmitterCount, cfg.Gateway.WorkerCount, txQueue, gwtestimpl.NewPassthroughGate(txQueue), cfg.Gateway.EndorsementChanSize, txPerSec)
+		gw, err := app.BuildGateway(ctx, ends[0], ends[1:], gwSigner, cfg.Network, tracker, submitters, cfg.Gateway.SubmitterCount, cfg.Gateway.WorkerCount, txQueue, gwtestimpl.NewPassthroughGate(txQueue), cfg.Gateway.EndorsementChanSize, txPerSec, nil)
 		if err != nil {
 			t.Fatalf("build gateway: %v", err)
 		}
@@ -237,6 +237,7 @@ var enableMetrics = flag.Bool("enable-metrics", false, "enable Prometheus metric
 var namespace = flag.String("namespace", "real", "namespace to commit transactions to")
 var dataset = flag.String("dataset", "testdata/USDC_dataset.json.gz", "dataset to use")
 var oldqueue = flag.Bool("oldqueue", false, "enable old queue")
+var depgraph = flag.Bool("depgraph", false, "schedule through the committer's dependency manager")
 var workers = flag.Int("workers", 20, "number of gateway workers processing transactions")
 var submitters = flag.Int("submitters", 4, "number of goroutines submitting transactions to the gateway")
 var orderers = flag.Int("orderers", 8, "number of goroutines submitting transactions to the orderer (BatchSubmitter workers)")
@@ -498,10 +499,18 @@ func runReplayTest(t *testing.T, processingWorkerCount int, submittingWorkerCoun
 	// - Fabric: Traditional block-based synchronization
 	// - Fabric-X: Notification-based (MemoryStore + NotificationDispatcher)
 	// th, err := integration.NewLocalTestHarnessWithFactoryAndTxQueue(t, integration.TestLogger{T: t}, evmConfig, "testdata/USDC_contract.json", "fabric", map[string]any{"Gateway.WorkerCount": processingWorkerCount, "Gateway.SubmitterCount": ordererSubmitterCount, "Network.Namespace": *namespace}, factory, gwcore.NewTxQueueV2())
+	allTxQueueDepth := 16384
+
 	var queue gwcore.TxQueueInterface
-	if *oldqueue {
+	switch {
+	case *depgraph:
+		queue = gwcore.NewDepGraphQueue(&gwconfig.DepGraphQueue{
+			EndorseWorkers: processingWorkerCount,
+			ChanSize:       allTxQueueDepth,
+		})
+	case *oldqueue:
 		queue = gwcore.NewTxQueue()
-	} else {
+	default:
 		queue = gwcore.NewTxQueueV2()
 	}
 	fmt.Printf("using queue type %T\n", queue)
@@ -515,7 +524,7 @@ func runReplayTest(t *testing.T, processingWorkerCount int, submittingWorkerCoun
 			"Gateway.WorkerCount":          processingWorkerCount,
 			"Gateway.SubmitterCount":       ordererSubmitterCount,
 			"Network.Namespace":            *namespace,
-			"Synchronizer.AllTxQueueDepth": 16384,
+			"Synchronizer.AllTxQueueDepth": allTxQueueDepth,
 			// One retained state snapshot, not two. This is already what
 			// integration.buildEndorsers picks when the config file leaves history_size
 			// unset (fabx.yaml does), so today it only pins the value: without it the
