@@ -20,6 +20,7 @@ import (
 	ethcore "github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+	fc "github.com/hyperledger/fabric-x-evm/common"
 	"github.com/hyperledger/fabric-x-evm/gateway/domain"
 	"github.com/hyperledger/fabric-x-sdk/blocks"
 	"github.com/stretchr/testify/require"
@@ -66,16 +67,28 @@ func (s *stubState) readCount() int {
 	return s.reads
 }
 
-// enqueueRecorder records the transactions the gate hands to the queue.
+// enqueueRecorder records the transactions the gate hands to the queue. When err
+// is set it refuses them instead, as a full or closed queue would.
 type enqueueRecorder struct {
 	mu  sync.Mutex
 	txs []*types.Transaction
+	err error
 }
 
-func (e *enqueueRecorder) Enqueue(tx *types.Transaction) {
+func (e *enqueueRecorder) Enqueue(tx *types.Transaction) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.err != nil {
+		return e.err
+	}
 	e.txs = append(e.txs, tx)
+	return nil
+}
+
+func (e *enqueueRecorder) refuse(err error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.err = err
 }
 
 func (e *enqueueRecorder) nonces() []uint64 {
@@ -121,6 +134,61 @@ func TestNonceGate_InOrderAdmits(t *testing.T) {
 
 	require.NoError(t, gate.Admit(context.Background(), newValidTx(t, key, validTxOpts{nonce: 5})))
 	require.Equal(t, []uint64{5}, q.nonces())
+}
+
+// A queue that cannot take the tx is reported to the eth_sendRawTransaction caller.
+func TestNonceGate_AdmitReturnsEnqueueError(t *testing.T) {
+	key := newKey(t)
+	state := newStubState()
+	state.set(senderAddr(key), 5)
+	gate, q := newTestGate(state)
+	q.refuse(domain.ErrQueueFull)
+
+	err := gate.Admit(context.Background(), newValidTx(t, key, validTxOpts{nonce: 5}))
+	require.ErrorIs(t, err, domain.ErrQueueFull)
+	require.Empty(t, q.nonces())
+}
+
+// A parked tx the queue refuses on release is dropped, not re-parked, so the
+// client can resubmit it straight away at the same nonce.
+func TestNonceGate_ObserveDropsReleasedTxTheQueueRefuses(t *testing.T) {
+	key := newKey(t)
+	state := newStubState()
+	state.set(senderAddr(key), 5)
+	gate, q := newTestGate(state)
+
+	parked := newValidTx(t, key, validTxOpts{nonce: 6})
+	require.NoError(t, gate.Admit(context.Background(), newValidTx(t, key, validTxOpts{nonce: 5})))
+	require.NoError(t, gate.Admit(context.Background(), parked))
+	require.NotNil(t, gate.IsPending(parked.Hash()))
+
+	q.refuse(domain.ErrQueueFull)
+	if fc.DebugBuild {
+		require.Panics(t, func() { gate.Observe(committedBlock(t, key, 5)) }, "an unexpected refusal debug-panics")
+	} else {
+		require.NotPanics(t, func() { gate.Observe(committedBlock(t, key, 5)) })
+	}
+	require.Nil(t, gate.IsPending(parked.Hash()), "a refused tx must not stay parked")
+
+	q.refuse(nil)
+	require.NoError(t, gate.Admit(context.Background(), parked))
+	require.Equal(t, []uint64{5, 6}, q.nonces())
+}
+
+// A closed queue means shutdown, so the released tx is dropped without a debug panic.
+func TestNonceGate_ObserveDropsQuietlyWhenQueueClosed(t *testing.T) {
+	key := newKey(t)
+	state := newStubState()
+	state.set(senderAddr(key), 5)
+	gate, q := newTestGate(state)
+
+	parked := newValidTx(t, key, validTxOpts{nonce: 6})
+	require.NoError(t, gate.Admit(context.Background(), newValidTx(t, key, validTxOpts{nonce: 5})))
+	require.NoError(t, gate.Admit(context.Background(), parked))
+
+	q.refuse(domain.ErrQueueClosed)
+	require.NotPanics(t, func() { gate.Observe(committedBlock(t, key, 5)) })
+	require.Nil(t, gate.IsPending(parked.Hash()))
 }
 
 func TestNonceGate_TooLowRejected(t *testing.T) {
