@@ -16,6 +16,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	ethcore "github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
+	fc "github.com/hyperledger/fabric-x-evm/common"
 	"github.com/hyperledger/fabric-x-evm/gateway/domain"
 )
 
@@ -34,7 +35,7 @@ var errTooManyParked = errors.New("too many queued (future-nonce) transactions f
 
 // enqueuer receives a ready transaction.
 type enqueuer interface {
-	Enqueue(tx *types.Transaction)
+	Enqueue(tx *types.Transaction) error
 }
 
 // NonceSequencer gates a sender's transactions by nonce.
@@ -234,8 +235,7 @@ func (g *nonceGate) Admit(ctx context.Context, tx *types.Transaction) error {
 	case tx.Nonce() < next:
 		return fmt.Errorf("%w: next nonce %d, tx nonce %d", ethcore.ErrNonceTooLow, next, tx.Nonce())
 	case tx.Nonce() == next:
-		g.queue.Enqueue(tx)
-		return nil
+		return g.queue.Enqueue(tx)
 	}
 
 	// Future nonce: park until the gap fills. The reaper drops it if it never does.
@@ -293,7 +293,19 @@ func (g *nonceGate) Observe(committed []domain.Transaction) {
 			}
 		}
 		if tx := g.unpark(ss, next); tx != nil {
-			g.queue.Enqueue(tx)
+			// No caller to report to here. Dropping rather than re-parking lets the
+			// client resubmit at once: the nonce has not moved.
+			if err := g.queue.Enqueue(tx); err != nil {
+				switch {
+				case errors.Is(err, domain.ErrTransactionAlreadyPending):
+				case errors.Is(err, domain.ErrQueueClosed):
+					logger.Warnf("nonce gate: dropped released tx %s: %v", tx.Hash().Hex(), err)
+				default:
+					msg := fmt.Sprintf("nonce gate: dropped released tx %s: %v", tx.Hash().Hex(), err)
+					logger.Error(msg)
+					fc.DebugPanic(msg)
+				}
+			}
 		}
 		g.senders.release(ss)
 	}
