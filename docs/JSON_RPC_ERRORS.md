@@ -31,6 +31,9 @@ The single source of truth in code is [`gateway/api/rpcerr`](../gateway/api/rpce
 | `txpool.ErrInvalidSender` | `-32003` |
 | `domain.ErrUnprotectedTx` (non-EIP-155) | `-32003` |
 | `domain.ErrTransactionAlreadyPending` (duplicate submission) | `-32003` |
+| Too many future-nonce transactions parked for the sender | `-32003` |
+| `domain.ErrQueueFull` (transaction queue full) | `-32003` |
+| `domain.ErrQueueClosed` (gateway shutting down) | `-32003` |
 | `domain.ErrNonceLookup` (state lookup failure) | `-32603` |
 | Any other error | `-32603` |
 
