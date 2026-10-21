@@ -97,10 +97,126 @@ func TestNewHeads_WSRoundTripMatchesGetBlock(t *testing.T) {
 	}
 }
 
+// Closing the WS client without eth_unsubscribe must still tear down the
+// NewHeads fan-out goroutine and drop the BlockFeed registration.
+func TestNewHeads_WSDisconnectReleasesSubscriber(t *testing.T) {
+	backend := &stubBackend{chainID: big.NewInt(4011), blockNum: 1}
+	filterAPI := filters.NewFilterAPI(backend)
+	t.Cleanup(filterAPI.Close)
+
+	srv, err := NewServer(backend, filterAPI)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpSrv := &http.Server{Handler: srv.WebsocketHandler([]string{"*"})}
+	go func() { _ = httpSrv.Serve(ln) }()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = httpSrv.Shutdown(ctx)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client, err := rpc.DialContext(ctx, "ws://"+ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	heads := make(chan *RPCBlock, 1)
+	if _, err := client.Subscribe(ctx, "eth", heads, "newHeads"); err != nil {
+		client.Close()
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for filterAPI.HeadSubscriberCount() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if filterAPI.HeadSubscriberCount() != 1 {
+		client.Close()
+		t.Fatalf("subscriber count=%d want 1", filterAPI.HeadSubscriberCount())
+	}
+
+	client.Close()
+
+	deadline = time.Now().Add(2 * time.Second)
+	for filterAPI.HeadSubscriberCount() != 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if filterAPI.HeadSubscriberCount() != 0 {
+		t.Fatalf("subscriber count=%d after WS close, want 0", filterAPI.HeadSubscriberCount())
+	}
+}
+
 func bytes32(b byte) []byte {
 	h := make([]byte, 32)
 	h[31] = b
 	return h
+}
+
+func TestNewHeads_PerConnectionCap(t *testing.T) {
+	backend := &stubBackend{chainID: big.NewInt(4011), blockNum: 1}
+	limits := filters.DefaultLimits
+	limits.MaxSubscriptionsPerConn = 1
+	limits.MaxSubscriptionsGlobal = 10
+	filterAPI := filters.NewFilterAPIWithLimits(backend, limits)
+	t.Cleanup(filterAPI.Close)
+
+	srv, err := NewServer(backend, filterAPI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpSrv := &http.Server{Handler: srv.WebsocketHandler([]string{"*"})}
+	go func() { _ = httpSrv.Serve(ln) }()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = httpSrv.Shutdown(ctx)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	client1, err := rpc.DialContext(ctx, "ws://"+ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client1.Close()
+
+	heads1 := make(chan *RPCBlock, 1)
+	sub1, err := client1.Subscribe(ctx, "eth", heads1, "newHeads")
+	if err != nil {
+		t.Fatalf("first subscribe: %v", err)
+	}
+	defer sub1.Unsubscribe()
+
+	heads1b := make(chan *RPCBlock, 1)
+	_, err = client1.Subscribe(ctx, "eth", heads1b, "newHeads")
+	if err == nil {
+		t.Fatal("second subscribe on same connection should hit per-connection cap")
+	}
+
+	client2, err := rpc.DialContext(ctx, "ws://"+ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client2.Close()
+	heads2 := make(chan *RPCBlock, 1)
+	sub2, err := client2.Subscribe(ctx, "eth", heads2, "newHeads")
+	if err != nil {
+		t.Fatalf("other connection should still subscribe: %v", err)
+	}
+	defer sub2.Unsubscribe()
 }
 
 func TestRPCBlockFromDomain_MatchesGetBlockShape(t *testing.T) {

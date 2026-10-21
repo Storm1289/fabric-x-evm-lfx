@@ -110,8 +110,8 @@ func (f *fakeNotifPeer) push(blockNum uint64, txID string) {
 		BlockNumber: blockNum,
 		Events: []notification.CommittedTxEvent{
 			{
-				Transaction: blocks.Transaction{ID: txID, Status: blocks.StatusCommitted},
-				BlockNum:    blockNum,
+				ID: txID, Status: blocks.StatusCommitted,
+				BlockNum: blockNum,
 			},
 		},
 	}
@@ -189,12 +189,11 @@ func evmBatch(t *testing.T, blockNum uint64) notification.AllTxBatch {
 	return notification.AllTxBatch{
 		BlockNumber: blockNum,
 		Events: []notification.CommittedTxEvent{{
-			Transaction: blocks.Transaction{
-				ID:        "evm-tx",
-				Status:    blocks.StatusCommitted,
-				InputArgs: [][]byte{{byte(common.ProposalTypeEVMTx)}, {0xaa}},
-			},
-			BlockNum: blockNum,
+			ID:        "evm-tx",
+			Status:    blocks.StatusCommitted,
+			EventName: common.ProposalTypeEVMTx,
+			InputArgs: [][]byte{{0xaa}},
+			BlockNum:  blockNum,
 		}},
 	}
 }

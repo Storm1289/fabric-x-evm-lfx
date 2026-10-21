@@ -93,7 +93,7 @@ Per-suite pass rates and compatibility matrices will be added as coverage stabil
 | `net_version` | ✅ | returns chain ID as network ID |
 | `net_listening` | 🔧 | always returns `true` |
 | `web3_clientVersion` | 🔧 | returns `"fabric-evm/0.1.0"` |
-| `eth_subscribe` / `eth_unsubscribe` | ❌ | transport supports WebSocket; push subscriptions not implemented yet |
+| `eth_subscribe` / `eth_unsubscribe` | ✅ | `newHeads` over WebSocket; `logs` and `newPendingTransactions` subscriptions are not supported |
 | `eth_newFilter` / filter APIs | ✅ | block and log filters (`eth_newBlockFilter`, `eth_newFilter`, `eth_getFilterChanges`, `eth_getFilterLogs`, `eth_uninstallFilter`); `eth_newPendingTransactionFilter` unsupported (no pending-tx model under execute-order-commit) |
 | `eth_sendTransaction` | ❌ | server-side signing not supported |
 | `eth_pendingTransactions` | ❌ | endpoint not implemented |
@@ -395,7 +395,8 @@ moving `toBlock`, will wait indefinitely if no transaction activity is happening
 | `transactionHash`, `blockHash`, `blockNumber`, `transactionIndex` | real data |
 | `from`, `to`, `contractAddress` | real data |
 | `logs` | real data |
-| `cumulativeGasUsed`, `gasUsed`, `effectiveGasPrice` | `0` |
+| `cumulativeGasUsed`, `gasUsed` | real data (gas used after refunds) |
+| `effectiveGasPrice` | `0` |
 | `logsBloom` | `0x` + 512 zeros |
 | `postState` | not set |
 
@@ -482,9 +483,10 @@ example error objects, and the layering of the classifier.
 
 ## Not implemented
 
-- **Push subscriptions**: no `eth_subscribe` / `eth_unsubscribe` yet. Polling filters for blocks
- and logs are supported; `eth_newPendingTransactionFilter` is not (no pending-tx model under
- execute-order-commit).
+- **Push subscriptions**: `eth_subscribe` / `eth_unsubscribe` support `newHeads` over WebSocket.
+ `logs` and `newPendingTransactions` subscriptions are not supported. Polling filters for blocks
+ and logs are covered separately (`eth_newBlockFilter`, `eth_newFilter`, …);
+ `eth_newPendingTransactionFilter` is not (no pending-tx model under execute-order-commit).
 - **`eth_sendTransaction`**: server-side key management is not supported. Use
  `eth_sendRawTransaction` with a client-signed transaction.
 - **Uncle queries** (`eth_getUncleByBlockHashAndIndex`, etc.): always empty; no uncle concept in
