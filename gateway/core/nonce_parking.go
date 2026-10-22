@@ -18,6 +18,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	fc "github.com/hyperledger/fabric-x-evm/common"
 	"github.com/hyperledger/fabric-x-evm/gateway/domain"
+	"github.com/hyperledger/fabric-x-evm/gateway/metrics"
 )
 
 // Memory guardrails per sender.
@@ -35,6 +36,10 @@ var errTooManyParked = errors.New("too many queued (future-nonce) transactions f
 
 // enqueuer receives a ready transaction.
 type enqueuer interface {
+	// STEP 4: at some point the tx will be enqueued into the tx queue;
+	// the queue is obviously a queuing point so we want to measure how
+	// many are waiting there. This is true for all 3 implementations of
+	// the queue
 	Enqueue(tx *types.Transaction) error
 }
 
@@ -153,6 +158,7 @@ func (c *senderCache) prune(now time.Time, ttl time.Duration, max int, byHash ma
 			if now.Sub(p.parkedAt) > ttl {
 				delete(ss.parked, nonce)
 				delete(byHash, p.tx.Hash())
+				metrics.Default().ForgetTx(p.tx.Hash())
 			}
 		}
 	}
@@ -195,6 +201,8 @@ func newNonceGate(state stateReader, signer types.Signer, queue enqueuer) *nonce
 
 // Admit enqueues tx at its expected nonce, parks a higher one, rejects a lower one.
 func (g *nonceGate) Admit(ctx context.Context, tx *types.Transaction) error {
+	// STEP 2: transactions land in the nonce sequencer.
+	// (Latency from STEP 1 is measured in SendTransaction; this is the body of Admit.)
 	from, err := types.Sender(g.signer, tx)
 	if err != nil {
 		return fmt.Errorf("recover sender: %w", err)
@@ -235,6 +243,9 @@ func (g *nonceGate) Admit(ctx context.Context, tx *types.Transaction) error {
 	case tx.Nonce() < next:
 		return fmt.Errorf("%w: next nonce %d, tx nonce %d", ethcore.ErrNonceTooLow, next, tx.Nonce())
 	case tx.Nonce() == next:
+		// STEP 4: tx is enqueued into the tx-queue; report the current parked count
+		// (the global nonce-gate queue) as a queue-depth metric before handing off.
+		metrics.Default().SetQueue(metrics.QueueNonceParked, len(g.byHash))
 		return g.queue.Enqueue(tx)
 	}
 
@@ -248,7 +259,11 @@ func (g *nonceGate) Admit(ctx context.Context, tx *types.Transaction) error {
 		// its own fee-bump rules, tracked in #62; until then we log and overwrite.
 		logger.Infof("nonce gate: replacing parked tx for %s at nonce %d", from, tx.Nonce())
 	}
+	// STEP 3: transactions may be queued for nonce sequencing – count the park and
+	// report the total number of globally parked transactions as a queue gauge.
+	metrics.Default().TxParked.Inc()
 	g.park(ss, tx)
+	metrics.Default().SetQueue(metrics.QueueNonceParked, len(g.byHash))
 	return nil
 }
 
@@ -289,13 +304,19 @@ func (g *nonceGate) Observe(committed []domain.Transaction) {
 		// release it: Admit enqueues its own transaction and never promotes another.
 		for nonce := range ss.parked {
 			if nonce < next {
-				g.unpark(ss, nonce)
+				// Its nonce is spent by another tx; it can never commit.
+				if tx := g.unpark(ss, nonce); tx != nil {
+					metrics.Default().ForgetTx(tx.Hash())
+				}
 			}
 		}
 		if tx := g.unpark(ss, next); tx != nil {
 			// No caller to report to here. Dropping rather than re-parking lets the
 			// client resubmit at once: the nonce has not moved.
 			if err := g.queue.Enqueue(tx); err != nil {
+				if !errors.Is(err, domain.ErrTransactionAlreadyPending) {
+					metrics.Default().ForgetTx(tx.Hash())
+				}
 				switch {
 				case errors.Is(err, domain.ErrTransactionAlreadyPending):
 				case errors.Is(err, domain.ErrQueueClosed):
@@ -322,6 +343,7 @@ func (g *nonceGate) IsPending(hash common.Hash) *types.Transaction {
 func (g *nonceGate) park(ss *senderState, tx *types.Transaction) {
 	if old, ok := ss.parked[tx.Nonce()]; ok {
 		delete(g.byHash, old.tx.Hash())
+		metrics.Default().ForgetTx(old.tx.Hash())
 	}
 	ss.parked[tx.Nonce()] = parkedTx{tx: tx, parkedAt: g.now()}
 	g.byHash[tx.Hash()] = tx
