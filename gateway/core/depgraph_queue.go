@@ -147,6 +147,9 @@ type trackedTx struct {
 	node    *dependencygraph.TransactionNode
 	readyAt time.Time // STEP 9: when the dep manager released it as clash-free
 
+	// next is the rest of this transaction's forest, started once it is handed back.
+	next dependencygraph.TxNodeBatch
+
 	// end is the endorsement submitToManager made, kept while endorsed so that
 	// processTx need not execute the transaction again; see ReusableEndorsement.
 	// readSeq is the commitSeq it was executed at.
@@ -182,7 +185,7 @@ type trackedTx struct {
 // Persistence: in-memory only, like the queues it replaces.
 type DepGraphQueue struct {
 	incoming  chan *dependencygraph.TransactionBatch
-	outgoing  chan dependencygraph.TxNodeBatch
+	outgoing  chan []dependencygraph.TxNodeBatch
 	validated chan dependencygraph.TxNodeBatch
 	admitted  chan admittedTx
 	endorsed  chan endorsedTx
@@ -258,7 +261,7 @@ func NewDepGraphQueue(cfg *config.DepGraphQueue) *DepGraphQueue {
 
 	q := &DepGraphQueue{
 		incoming:       make(chan *dependencygraph.TransactionBatch, chanSize),
-		outgoing:       make(chan dependencygraph.TxNodeBatch, chanSize),
+		outgoing:       make(chan []dependencygraph.TxNodeBatch, chanSize),
 		validated:      make(chan dependencygraph.TxNodeBatch, chanSize),
 		admitted:       make(chan admittedTx, chanSize),
 		endorsed:       make(chan endorsedTx, chanSize),
@@ -277,9 +280,9 @@ func NewDepGraphQueue(cfg *config.DepGraphQueue) *DepGraphQueue {
 	// the provider, so a nil one panics on construction.
 	q.metrics = monitoring.NewProvider()
 
-	mgr := dependencygraph.NewManager(&dependencygraph.Parameters{
+	mgr := dependencygraph.NewForestManager(&dependencygraph.ForestParameters{
 		IncomingTxs:               q.incoming,
-		OutgoingDepFreeTxsNode:    q.outgoing,
+		OutgoingDepFreeForests:    q.outgoing,
 		IncomingValidatedTxsNode:  q.validated,
 		NumOfLocalDepConstructors: 1,
 		WaitingTxsLimit:           waitingTxsLimit,
@@ -511,53 +514,71 @@ func (q *DepGraphQueue) drainReleased() {
 		select {
 		case <-q.ctx.Done():
 			return
-		case nodes, ok := <-q.outgoing:
+		case forests, ok := <-q.outgoing:
 			// STEP 9: tx released by the dep manager as clash-free – report the
 			// remaining depth of the outgoing channel.
 			if !ok {
 				return
 			}
 			metrics.Default().SetQueue(metrics.QueueDepgraphOutgoing, len(q.outgoing))
-			depGraphLogger.Debugf("DepGraphQueue.drainReleased() received %d clash-free nodes from dependency manager", len(nodes))
-			q.markReady(nodes)
+			depGraphLogger.Debugf("DepGraphQueue.drainReleased() received %d forests from dependency manager", len(forests))
+			q.markReady(forests)
 		}
 	}
 }
 
-func (q *DepGraphQueue) markReady(nodes dependencygraph.TxNodeBatch) {
-	var orphans dependencygraph.TxNodeBatch
-	var unexpected []string
-
+// markReady starts each released forest. Its members conflict, so they run one at
+// a time, in the order given: the next starts once the previous is handed back.
+func (q *DepGraphQueue) markReady(forests []dependencygraph.TxNodeBatch) {
 	q.mu.Lock()
-	readyAt := time.Now()
-	for _, node := range nodes {
-		id := node.VerifierTx.GetRef().GetTxId()
-		hash, ok := hashFromTxRefID(id)
-		if !ok {
-			// Only this queue sets TxId, so the manager and the queue disagree about the reference.
-			msg := fmt.Sprintf("DepGraphQueue.markReady() unrecognised tx ref %q received from dependency manager", id)
-			depGraphLogger.Error(msg)
-			unexpected = append(unexpected, msg)
-			orphans = append(orphans, node)
-			continue
-		}
-		t, tracked := q.tracked[hash]
-		if !tracked {
-			depGraphLogger.Warnf("DepGraphQueue.markReady() tx %s node received from dependency manager but not tracked", hash.Hex())
-			orphans = append(orphans, node)
-			continue
-		}
-		t.node = node
-		t.readyAt = readyAt // STEP 9: stamp when the dep manager released this tx
-		q.ready = append(q.ready, t.tx)
-		depGraphLogger.Debugf("DepGraphQueue.markReady() tx %s marked ready", hash.Hex())
-	}
-	q.cond.Broadcast()
+	orphans, unexpected := q.startForests(forests)
 	q.mu.Unlock()
 
-	// Nothing will run these, so hand them back now or their dependents wait forever.
 	q.release(orphans)
-	for _, msg := range unexpected {
+	debugPanicAll(unexpected)
+}
+
+// startForests makes the first runnable member of each forest ready and keeps the
+// rest on it. Members it cannot run are returned to hand back, or their dependents
+// wait forever. Caller must hold q.mu.
+func (q *DepGraphQueue) startForests(forests []dependencygraph.TxNodeBatch) (orphans dependencygraph.TxNodeBatch, unexpected []string) {
+	readyAt := time.Now()
+	started := false
+	for _, forest := range forests {
+		for i, node := range forest {
+			id := node.VerifierTx.GetRef().GetTxId()
+			hash, ok := hashFromTxRefID(id)
+			if !ok {
+				// Only this queue sets TxId, so the manager and the queue disagree about the reference.
+				msg := fmt.Sprintf("DepGraphQueue.startForests() unrecognised tx ref %q received from dependency manager", id)
+				depGraphLogger.Error(msg)
+				unexpected = append(unexpected, msg)
+				orphans = append(orphans, node)
+				continue
+			}
+			t, tracked := q.tracked[hash]
+			if !tracked {
+				depGraphLogger.Warnf("DepGraphQueue.startForests() tx %s node received from dependency manager but not tracked", hash.Hex())
+				orphans = append(orphans, node)
+				continue
+			}
+			// STEP 9: stamp when the dep manager released this tx.
+			t.node, t.readyAt, t.next = node, readyAt, forest[i+1:]
+			q.ready = append(q.ready, t.tx)
+			started = true
+			depGraphLogger.Debugf("DepGraphQueue.startForests() tx %s marked ready", hash.Hex())
+			break
+		}
+	}
+	if started {
+		q.cond.Broadcast()
+	}
+	return orphans, unexpected
+}
+
+// debugPanicAll reports each unexpected state, after the caller has released its lock.
+func debugPanicAll(msgs []string) {
+	for _, msg := range msgs {
 		fc.DebugPanic(msg)
 	}
 }
@@ -628,14 +649,17 @@ func (q *DepGraphQueue) InFlight() int {
 func (q *DepGraphQueue) Complete(hash common.Hash) {
 	depGraphLogger.Debugf("DepGraphQueue.Complete() called with tx %s", hash.Hex())
 	q.mu.Lock()
-	nodes := q.untrack(hash)
+	nodes, unexpected := q.settle([]common.Hash{hash})
 	q.mu.Unlock()
 	q.release(nodes)
+	debugPanicAll(unexpected)
 }
 
-// untrack forgets one transaction and returns the node it still owes the
-// manager, which is what releases whatever queued behind it. Clearing the node
-// is what makes a second call a no-op.
+// untrack forgets one transaction, returning the node it still owes the manager
+// and the rest of the forest it was holding. The node is what releases whatever
+// queued behind it; the remainder is the members parked on this transaction
+// because they clash with it, which only settle may start. Clearing both is what
+// makes a second call a no-op.
 //
 // An untracked hash is normal on both paths, so do not make this an error or a
 // debug-panic. Complete is documented to accept one, and reaches it when a
@@ -647,19 +671,51 @@ func (q *DepGraphQueue) Complete(hash common.Hash) {
 // alone makes this branch routine in the gateway/app tests.
 //
 // Caller must hold q.mu.
-func (q *DepGraphQueue) untrack(hash common.Hash) dependencygraph.TxNodeBatch {
+func (q *DepGraphQueue) untrack(hash common.Hash) (dependencygraph.TxNodeBatch, dependencygraph.TxNodeBatch) {
 	t, ok := q.tracked[hash]
 	if !ok {
 		depGraphLogger.Debugf("DepGraphQueue.untrack() tx %s is not tracked", hash.Hex())
-		return nil
+		return nil, nil
 	}
 	delete(q.tracked, hash)
+	next := t.next
+	t.next = nil
 	if t.node == nil {
-		return nil
+		return nil, next
 	}
 	node := t.node
 	t.node = nil
-	return dependencygraph.TxNodeBatch{node}
+	return dependencygraph.TxNodeBatch{node}, next
+}
+
+// settle finishes a set of transactions: each is untracked, the node it owed is
+// collected to hand back, and the next member of its forest is started.
+//
+// The next members start only after every hash is untracked, which is what makes
+// a forest whose members commit in the same block behave: a member parked behind
+// one of them is handed back rather than started, because by then its own
+// transaction is gone from q.tracked and startForests finds nothing to run it
+// on. Settling one hash at a time would start it instead, and the manager would
+// be waiting on a node that is already on its way back.
+//
+// Members that cannot be started come back as orphans, folded into the nodes to
+// release: nothing will run them, so holding them would strand their dependents
+// for good. The unexpected states they report are the caller's to debug-panic on
+// once it is off the lock.
+//
+// Caller must hold q.mu.
+func (q *DepGraphQueue) settle(hashes []common.Hash) (dependencygraph.TxNodeBatch, []string) {
+	var nodes dependencygraph.TxNodeBatch
+	var rest []dependencygraph.TxNodeBatch
+	for _, hash := range hashes {
+		node, next := q.untrack(hash)
+		nodes = append(nodes, node...)
+		if len(next) > 0 {
+			rest = append(rest, next)
+		}
+	}
+	orphans, unexpected := q.startForests(rest)
+	return append(nodes, orphans...), unexpected
 }
 
 // Handle tells the manager which transactions committed. Rejected ones go back
@@ -731,11 +787,14 @@ type txOutcome struct {
 func (q *DepGraphQueue) untrackOrRetry(
 	committed []domain.Transaction, outcomes []txOutcome, blockNum uint64,
 ) []error {
-	var nodes dependencygraph.TxNodeBatch
 	var errs []error
 
 	q.mu.Lock()
 	q.recordCommitted(committed)
+	// Collected rather than settled one at a time, because a forest whose
+	// members commit in the same block depends on the whole pass finishing
+	// first (see settle).
+	finished := make([]common.Hash, 0, len(outcomes))
 	for _, o := range outcomes {
 		// Each case answers one question: is this transaction still ours after
 		// this block? A transaction awaiting another attempt is, and keeps its
@@ -765,13 +824,15 @@ func (q *DepGraphQueue) untrackOrRetry(
 			errs = append(errs, err)
 		}
 		if !pending {
-			nodes = append(nodes, q.untrack(o.hash)...)
+			finished = append(finished, o.hash)
 		}
 	}
+	nodes, unexpected := q.settle(finished)
 	q.mu.Unlock()
 
 	depGraphLogger.Debugf("DepGraphQueue.untrackOrRetry() releasing %d nodes (block txs=%d)", len(nodes), len(outcomes))
 	q.release(nodes)
+	debugPanicAll(unexpected)
 	return errs
 }
 
@@ -779,8 +840,10 @@ func (q *DepGraphQueue) untrackOrRetry(
 // reporting whether it had the budget for one. Only a conflict reaches it, and
 // only while the queue is running.
 //
-// It goes straight back on the ready list and keeps the node it already has.
-// Both halves matter:
+// It goes straight back on the ready list and keeps the node it already has,
+// along with any forest members parked on it: those clash with this transaction,
+// so they must keep waiting until it reaches a final outcome, the same reason its
+// dependents do. Both halves matter:
 //
 //   - The node is what holds the transaction's dependents. Feeding it back would
 //     run freeDependents and release everything queued behind this key, but the
@@ -799,7 +862,7 @@ func (q *DepGraphQueue) untrackOrRetry(
 //
 // No duplicate check is needed when appending: the conflicted attempt left the
 // ready list when Dequeue served it (see Dequeue). It does not untrack either,
-// so untrackOrRetry stays the only caller of untrack. Caller must hold q.mu.
+// so settle stays the only caller of untrack. Caller must hold q.mu.
 func (q *DepGraphQueue) retry(hash common.Hash) bool {
 	t := q.tracked[hash]
 	if t.retries >= q.maxMVCCRetries {

@@ -178,3 +178,6 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )
+
+// Temporary: unreleased forest manager branch.
+replace github.com/hyperledger/fabric-x-committer => github.com/cendhu/fabric-x-committer v0.0.0-20261008094612-52600af3236f
