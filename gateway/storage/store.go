@@ -43,6 +43,7 @@ func toStorageBlock(b domain.Block) InsertBlockParams {
 		ParentHash:  b.ParentHash,
 		StateRoot:   b.StateRoot,
 		Timestamp:   b.Timestamp,
+		GasUsed:     int64(b.GasUsed),
 	}
 }
 
@@ -53,6 +54,7 @@ func toDomainBlock(b Block) domain.Block {
 		ParentHash:  b.ParentHash,
 		StateRoot:   b.StateRoot,
 		Timestamp:   b.Timestamp,
+		GasUsed:     uint64(b.GasUsed),
 	}
 }
 

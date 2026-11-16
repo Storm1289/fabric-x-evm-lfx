@@ -47,7 +47,7 @@ func (q *Queries) BlockNumberByHash(ctx context.Context, blockHash []byte) (int6
 
 const getBlockByHash = `-- name: GetBlockByHash :one
 SELECT
-    block_number, block_hash, parent_hash, state_root, timestamp, extra_data
+    block_number, block_hash, parent_hash, state_root, timestamp, extra_data, gas_used
 FROM
     blocks
 WHERE
@@ -64,13 +64,14 @@ func (q *Queries) GetBlockByHash(ctx context.Context, blockHash []byte) (Block, 
 		&i.StateRoot,
 		&i.Timestamp,
 		&i.ExtraData,
+		&i.GasUsed,
 	)
 	return i, err
 }
 
 const getBlockByNumber = `-- name: GetBlockByNumber :one
 SELECT
-    block_number, block_hash, parent_hash, state_root, timestamp, extra_data
+    block_number, block_hash, parent_hash, state_root, timestamp, extra_data, gas_used
 FROM
     blocks
 WHERE
@@ -87,6 +88,7 @@ func (q *Queries) GetBlockByNumber(ctx context.Context, blockNumber int64) (Bloc
 		&i.StateRoot,
 		&i.Timestamp,
 		&i.ExtraData,
+		&i.GasUsed,
 	)
 	return i, err
 }
@@ -433,10 +435,11 @@ INSERT INTO
         parent_hash,
         state_root,
         timestamp,
-        extra_data
+        extra_data,
+        gas_used
     )
 VALUES
-    (?, ?, ?, ?, ?, ?) ON CONFLICT (block_number) DO NOTHING
+    (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (block_number) DO NOTHING
 `
 
 type InsertBlockParams struct {
@@ -446,6 +449,7 @@ type InsertBlockParams struct {
 	StateRoot   []byte
 	Timestamp   int64
 	ExtraData   []byte
+	GasUsed     int64
 }
 
 func (q *Queries) InsertBlock(ctx context.Context, arg InsertBlockParams) error {
@@ -456,6 +460,7 @@ func (q *Queries) InsertBlock(ctx context.Context, arg InsertBlockParams) error 
 		arg.StateRoot,
 		arg.Timestamp,
 		arg.ExtraData,
+		arg.GasUsed,
 	)
 	return err
 }
@@ -568,7 +573,7 @@ func (q *Queries) InsertTransaction(ctx context.Context, arg InsertTransactionPa
 
 const latestBlock = `-- name: LatestBlock :one
 SELECT
-    block_number, block_hash, parent_hash, state_root, timestamp, extra_data
+    block_number, block_hash, parent_hash, state_root, timestamp, extra_data, gas_used
 FROM
     blocks
 ORDER BY
@@ -587,6 +592,7 @@ func (q *Queries) LatestBlock(ctx context.Context) (Block, error) {
 		&i.StateRoot,
 		&i.Timestamp,
 		&i.ExtraData,
+		&i.GasUsed,
 	)
 	return i, err
 }

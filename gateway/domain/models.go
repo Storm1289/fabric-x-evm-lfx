@@ -17,6 +17,7 @@ type Block struct {
 	ParentHash   []byte
 	StateRoot    []byte
 	Timestamp    int64
+	GasUsed      uint64        // total gas of the block's transactions
 	Transactions []Transaction // populated when full=true in API requests
 }
 
