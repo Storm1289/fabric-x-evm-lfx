@@ -62,9 +62,9 @@ services:
       SC_ORDERER_BLOCK_SIZE: "1"
       # SC_ORDERER_BLOCK_TIMEOUT: "100ms"
     healthcheck:
-      test: ["CMD-SHELL", "nc -z localhost 7001"]
+      test: ["CMD", "timeout", "5", "/root/bin/healthcheck"]
       interval: 2s
-      timeout: 3s
+      timeout: 6s
       retries: 30
       start_period: 10s
     networks:

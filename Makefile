@@ -89,16 +89,17 @@ NETWORK     ?= fabric-x
 NS_2OF2     ?= basic2of2
 POLICY_2OF2 ?= AND('Org1MSP.member','Org2MSP.member')
 
-# How long to keep trying to create a namespace. The committer accepts
-# connections before it can serve config changes, so the first attempts can
-# legitimately fail; the delay doubles each time, up to roughly a minute.
+# Namespace create attempts for start-full, which has no single readiness check.
 NS_ATTEMPTS ?= 6
 
-# create-namespace,<namespace>,<policy> - create the namespace if it does not
-# already exist, waiting for the committer to become able to serve it.
+# Healthcheck attempts (up to 6s each) while waiting for the test committer.
+READY_ATTEMPTS ?= 30
+
+# create-namespace,<namespace>,<policy>[,<attempts>] - create the namespace if
+# it does not already exist; retries with a doubling delay, default 1 attempt.
 define create-namespace
 @echo "Creating namespace $(1)..."
-@ok=0; delay=1; for attempt in $$(seq 1 $(NS_ATTEMPTS)); do \
+@ok=0; delay=1; for attempt in $$(seq 1 $(or $(3),1)); do \
 	if $(DOCKER) run --rm --network $(NETWORK) \
 		--user "$(UID):$(GID)" \
 		--env "FX_NS=$(1)" \
@@ -116,7 +117,7 @@ define create-namespace
 	echo "  namespace $(1): attempt $$attempt failed, retrying in $$delay""s..."; \
 	sleep $$delay; delay=$$((delay * 2)); \
 done; \
-[ "$$ok" = 1 ] || { echo "Error: could not create namespace $(1) after $(NS_ATTEMPTS) attempts"; exit 1; }
+[ "$$ok" = 1 ] || { echo "Error: could not create namespace $(1) after $(or $(3),1) attempt(s)"; exit 1; }
 endef
 
 .PHONY: init-x
@@ -163,7 +164,12 @@ start-x:  ## Start the fabric-x test network (docker)
 	@if nc -z localhost 7050 2>/dev/null; then echo "Error: port 7050 is already in use — stop any running Fabric orderer before starting."; exit 1; fi
 	@$(COMPOSE) -f compose.fabric-x.yml up -d
 	@echo "Waiting for test committer to be ready..."
-	@while ! nc -z localhost 7001 2>/dev/null; do sleep 1; done
+	@# The image's healthcheck blocks until every committer service serves, so bound it.
+	@ok=0; for attempt in $$(seq 1 $(READY_ATTEMPTS)); do \
+		if $(DOCKER) exec test-committer timeout 5 /root/bin/healthcheck >/dev/null 2>&1; then ok=1; break; fi; \
+		sleep 1; \
+	done; \
+	[ "$$ok" = 1 ] || { echo "Error: test committer not healthy after $(READY_ATTEMPTS) attempts"; exit 1; }
 	$(call create-namespace,$(NS),$(POLICY))
 	$(call create-namespace,$(NS_2OF2),$(POLICY_2OF2))
 
@@ -220,8 +226,8 @@ start-full:  ## Start the full multi-party fabric-x network (docker)
 	@while ! nc -z localhost 7001 2>/dev/null; do sleep 1; done
 	@echo "Waiting for committer sidecar to be ready..."
 	@while ! nc -z localhost 4001 2>/dev/null; do sleep 1; done
-	$(call create-namespace,$(NS1),$(POLICY))
-	$(call create-namespace,$(NS2),$(POLICY))
+	$(call create-namespace,$(NS1),$(POLICY),$(NS_ATTEMPTS))
+	$(call create-namespace,$(NS2),$(POLICY),$(NS_ATTEMPTS))
 
 .PHONY: stop-full
 stop-full:  ## Stop the full multi-party network
