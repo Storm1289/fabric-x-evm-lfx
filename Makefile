@@ -164,9 +164,9 @@ start-x:  ## Start the fabric-x test network (docker)
 	@if nc -z localhost 7050 2>/dev/null; then echo "Error: port 7050 is already in use — stop any running Fabric orderer before starting."; exit 1; fi
 	@$(COMPOSE) -f compose.fabric-x.yml up -d
 	@echo "Waiting for test committer to be ready..."
-	@# The image's healthcheck blocks until every committer service serves, so bound it.
+	@# The healthcheck blocks while the services are down, so bound it; the orderer can come up last.
 	@ok=0; for attempt in $$(seq 1 $(READY_ATTEMPTS)); do \
-		if $(DOCKER) exec test-committer timeout 5 /root/bin/healthcheck >/dev/null 2>&1; then ok=1; break; fi; \
+		if $(DOCKER) exec test-committer sh -c 'timeout 5 /root/bin/healthcheck && nc -z localhost 7050' >/dev/null 2>&1; then ok=1; break; fi; \
 		sleep 1; \
 	done; \
 	[ "$$ok" = 1 ] || { echo "Error: test committer not healthy after $(READY_ATTEMPTS) attempts"; exit 1; }

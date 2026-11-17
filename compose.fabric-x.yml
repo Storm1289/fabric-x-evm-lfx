@@ -62,7 +62,8 @@ services:
       SC_ORDERER_BLOCK_SIZE: "1"
       # SC_ORDERER_BLOCK_TIMEOUT: "100ms"
     healthcheck:
-      test: ["CMD", "timeout", "5", "/root/bin/healthcheck"]
+      # Committer services, then the built-in orderer, which can come up after them.
+      test: ["CMD-SHELL", "/root/bin/healthcheck && nc -z localhost 7050"]
       interval: 2s
       timeout: 6s
       retries: 30
