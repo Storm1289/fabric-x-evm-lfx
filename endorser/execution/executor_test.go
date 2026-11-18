@@ -38,7 +38,7 @@ func TestNewExecutor_WrapsStateDBWhenDebugEnabled(t *testing.T) {
 	}
 	eng := NewEVMEngine(Namespace, kvs, cfg, false)
 
-	ex, err := eng.newExecutor(nil, uint64(1_700_000_000))
+	ex, err := eng.NewTxExecutor(nil, uint64(1_700_000_000))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestExecute_MaxTxGas(t *testing.T) {
 			MaxTxGas:    maxTxGas,
 		}
 		eng := NewEVMEngine(Namespace, kvs, cfg, false)
-		ex, err := eng.newExecutor(nil, uint64(1_700_000_000))
+		ex, err := eng.NewTxExecutor(nil, uint64(1_700_000_000))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -181,7 +181,7 @@ func TestNewSnapshotAt_NegativeBlockNumberResolvesToLatest(t *testing.T) {
 	}
 }
 
-// TestNewExecutor_NegativeBlockNumberResolvesToLatest is the newExecutor counterpart of
+// TestNewExecutor_NegativeBlockNumberResolvesToLatest is the NewTxExecutor counterpart of
 // TestNewSnapshotAt_NegativeBlockNumberResolvesToLatest; it backs eth_call/eth_estimateGas
 // rather than eth_getBalance/eth_getCode/eth_getStorageAt/eth_getTransactionCount.
 func TestNewExecutor_NegativeBlockNumberResolvesToLatest(t *testing.T) {
@@ -198,7 +198,7 @@ func TestNewExecutor_NegativeBlockNumberResolvesToLatest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ex, err := eng.newExecutor(big.NewInt(-5), uint64(1_700_000_000))
+	ex, err := eng.NewTxExecutor(big.NewInt(-5), uint64(1_700_000_000))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +206,7 @@ func TestNewExecutor_NegativeBlockNumberResolvesToLatest(t *testing.T) {
 
 	got := ex.reader.(*testVersionedDBReader).blockNumber
 	if got != wantLatest {
-		t.Errorf("newExecutor(-5) resolved to block %d, want latest (%d)", got, wantLatest)
+		t.Errorf("NewTxExecutor(-5) resolved to block %d, want latest (%d)", got, wantLatest)
 	}
 }
 
@@ -219,7 +219,7 @@ func TestNewExecutor_NegativeBlockNumberResolvesToLatest(t *testing.T) {
 func TestCall_ReportsPreRefundGasNotPostRefund(t *testing.T) {
 	eng, contract := newClearingContractEngine(t, "exec_refund")
 
-	ex, err := eng.newExecutor(nil, uint64(1_700_000_000))
+	ex, err := eng.NewTxExecutor(nil, uint64(1_700_000_000))
 	if err != nil {
 		t.Fatal(err)
 	}

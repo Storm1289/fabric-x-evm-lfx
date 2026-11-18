@@ -68,7 +68,7 @@ func codeWrite(hexAddr string, code []byte) blocks.KVWrite {
 }
 
 func storageWrite(hexAddr, hexSlot, hexValue string) blocks.KVWrite {
-	return blocks.KVWrite{Key: "str:" + hexAddr + ":" + hexSlot, Value: []byte(hexValue)}
+	return blocks.KVWrite{Key: "str:" + hexAddr + ":" + hexSlot, Value: common.HexToHash(hexValue).Bytes()} // raw 32 bytes
 }
 
 func deleteWrite(key string) blocks.KVWrite {
@@ -332,6 +332,18 @@ func TestCommit_MalformedKey(t *testing.T) {
 	_, err := ts.Commit(t.Context(), block)
 	if err != nil {
 		t.Fatalf("malformed keys must not error: %v", err)
+	}
+}
+
+func TestCommit_MalformedNonce(t *testing.T) {
+	ts := newTestStore(t)
+	addr := common.HexToAddress("0x3333")
+	block := makeBlock(1, makeTx(true, blocks.KVWrite{Key: "acc:" + addr.Hex() + ":nonce", Value: []byte{0x01}}))
+	if _, err := ts.Commit(t.Context(), block); err == nil {
+		t.Fatal("a nonce that is not 8 bytes must fail the commit")
+	}
+	if ts.Root() != types.EmptyRootHash {
+		t.Error("a failed commit must leave the root unchanged")
 	}
 }
 
