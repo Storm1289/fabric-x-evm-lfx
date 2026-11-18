@@ -363,16 +363,23 @@ submission, but tooling that checks estimate bounds now gets meaningful numbers.
 
 ## Block representation
 
-| Field                                                             | Value                              |
-| ----------------------------------------------------------------- | ---------------------------------- |
-| `status`                                                          | `1` (success) or `0` (failure)     |
-| `transactionHash`, `blockHash`, `blockNumber`, `transactionIndex` | real data                          |
-| `from`, `to`, `contractAddress`                                   | real data                          |
-| `logs`                                                            | real data                          |
-| `cumulativeGasUsed`, `gasUsed`                                    | real data (gas used after refunds) |
-| `effectiveGasPrice`                                               | `0`                                |
-| `logsBloom`                                                       | `0x` + 512 zeros                   |
-| `postState`                                                       | not set                            |
+| Field | Value | Notes |
+| ---------------------------------------- | ---------------------------------- | ------------------------------------------------- |
+| `number` | Fabric block number | |
+| `hash` | Fabric block header hash | |
+| `parentHash` | Fabric previous block hash | |
+| `timestamp` | Node wall-clock time at parse time | **Not** the Fabric block creation time — see note |
+| `transactions` | Full objects or hashes | only this gateway's namespace — see note |
+| `logsBloom` | `0x` + 512 hex zeros (empty bloom) | always the empty bloom — see Receipt note |
+| `transactionsRoot` | empty-txs hash / zero | no per-block MPT — see note |
+| `stateRoot` | MPT hash (only if trie enabled) | not Ethereum-compatible — see note |
+| `receiptsRoot` | empty-trie root | no MPT |
+| `miner` | `0x…0F4B` | sentinel; `COINBASE` opcode is `0x0` (separate) |
+| `gasLimit` / `gasUsed` / `baseFeePerGas` | `0` | gas not metered |
+| `difficulty` / `totalDifficulty` | `0` | |
+| `uncles` | `[]` | no uncle concept |
+| `size` | `0` | |
+| `extraData` | `"0x"` | empty bytes |
 
 **Block timestamp**: The `timestamp` field is set to the node's wall-clock time
 (`time.Now().Unix()`) when the block is received and parsed by the Fabric SDK, as there is no
@@ -404,6 +411,22 @@ higher. Block `0` is addressable (`earliest` / `0x0` map to it), but it is the F
 block and holds no EVM transactions. Event indexers that start scanning from block 0 will simply
 find no EVM history until the first EVM block.
 
+**Blocks are shared with other applications on the channel**: a Fabric channel can carry several
+namespaces, and the gateway commits to exactly one of them. Block numbers are the channel's, not
+the namespace's, so they advance because of activity the gateway has no part in, and
+`eth_getBlockByNumber` returns a well-formed but **empty** block whenever a block carried nothing
+for this namespace. Transactions, receipts and logs are filtered to the configured namespace, so
+no other application's data is ever returned — but the block sequence is not private: its length
+reflects total channel activity. Clients that assume a non-empty block, or that infer transaction
+volume from block height, will be misled.
+
+**`transactionIndex` may be sparse**: the index is the transaction's position in the *Fabric*
+block, which also counts other namespaces' transactions, non-EVM transactions and transactions
+dropped as MVCC conflicts, so it is not a dense `0..n-1` index into the block's `transactions`
+array and `eth_getTransactionByBlockNumberAndIndex` can return `null` for an index below the
+highest one. Enumerate a block from the `transactions` array rather than by index. `#440`
+densifies the index over the transactions the gateway keeps; **remove this note when it lands.**
+
 **Block production requires transactions**: Fabric only creates new blocks when there are
 transactions to order. If no transactions are submitted, the block number does not advance.
 Clients that poll `eth_blockNumber` waiting for the next block, or that use `eth_getLogs` with a
@@ -416,20 +439,25 @@ moving `toBlock`, will wait indefinitely if no transaction activity is happening
 
 ## Receipt representation
 
-| Field                                                             | Value                          |
-| ----------------------------------------------------------------- | ------------------------------ |
-| `status`                        | `1` (success) or `0` (failure)     |
-| ------------------------------- | ---------------------------------- |
-| `from`, `to`, `contractAddress` | real data                          |
-| `logs`                          | real data                          |
-| `cumulativeGasUsed`, `gasUsed`  | real data (gas used after refunds) |
-| `effectiveGasPrice`             | `0`                                |
-| `logsBloom`                     | `0x` + 512 zeros                   |
-| `postState`                     | not set                            |
+| Field                                         | Value                                           |
+| --------------------------------------------- | ----------------------------------------------- |
+| `status`                                      | `1` (success) or `0` (failure)                  |
+| `transactionHash`, `blockHash`, `blockNumber` | real data                                       |
+| `transactionIndex`                            | Fabric block position; may be sparse — see note |
+| `from`, `to`, `contractAddress`               | real data                                       |
+| `logs`                                        | real data                                       |
+| `cumulativeGasUsed`, `gasUsed`                | real data (gas used after refunds)              |
+| `effectiveGasPrice`                           | `0`                                             |
+| `logsBloom`                                   | `0x` + 512 zeros                                |
+| `postState`                                   | not set                                         |
 
 **`logsBloom` is empty**: the bloom filter is not computed; the field is present but always set to
 the all-zero empty bloom (`0x` + 512 hex zeros). Clients that pre-filter logs by testing the bloom
 will get no matches and must rely on `eth_getLogs` instead.
+
+**`transactionIndex` may be sparse**: it is the transaction's position within the Fabric block,
+which also counts other namespaces' and non-EVM transactions, so it is not a dense index into the
+block's `transactions` array. See Block representation for the detail.
 
 **`status=0` is overloaded**: a `status=0` receipt may mean an ordinary EVM revert *or* a Fabric
 MVCC conflict — the two are indistinguishable at this level (see Transaction lifecycle and

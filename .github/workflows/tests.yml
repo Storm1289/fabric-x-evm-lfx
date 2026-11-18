@@ -212,7 +212,10 @@ jobs:
   integration-tests:
     name: Integration Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 15 # avg ~3 min (fabric-x 39s + fablo 127s)
+    # avg ~5 min (fabric-x 39s plus the namespace matrix on the same network, and
+    # fablo 127s, which now also deploys a second chaincode and runs the matrix
+    # for classic fabric).
+    timeout-minutes: 25
     needs: [ quick-tests, oz-hardhat-compat ]
     steps:
       - name: Checkout code
@@ -226,9 +229,23 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Both suites run against the one network: start-x creates the matrix's
+      # second namespace, and the orderer's block size of 2 lets two namespaces
+      # share a block, so the matrix needs no fixture of its own.
       - name: Fabric-X integration tests
-        run: make clean-x init-x start-x test-x stop-x
+        run: make clean-x init-x start-x test-x test-ns-x stop-x
 
+      # Vanilla Fabric (integration/fablo.yaml is protocol: fabric). Covers both
+      # TestFablo and TestNamespaceIsolationFablo — the namespace-isolation
+      # matrix for classic Fabric runs HERE, not in a step of its own, so there
+      # is deliberately no "Fabric namespace isolation tests" counterpart to the
+      # Fabric-X step above. See the go test -run pattern in
+      # scripts/run_integration_test.sh.
+      #
+      # Both share one network because bringing Fablo up costs a prune, a
+      # channel and two chaincode deploys, far more than the tests themselves.
+      # That script prunes and regenerates before starting, so each run begins
+      # from a clean network.
       - name: Fabric integration tests
         run: make integration-tests
 

@@ -59,8 +59,23 @@ services:
       SC_QUERY_DATABASE_USERNAME: "postgres"
       SC_QUERY_DATABASE_PASSWORD: "postgres"
       SC_QUERY_DATABASE_DATABASE: "postgres"
-      SC_ORDERER_BLOCK_SIZE: "1"
-      # SC_ORDERER_BLOCK_TIMEOUT: "100ms"
+      # Block cutting lives here, not in mock-orderer.yaml. The mock orderer reads
+      # its config with viper's AutomaticEnv under the SC_ORDERER prefix, so these
+      # override the YAML rather than the other way round; setting them in both
+      # places would mean the file says one thing and the orderer does another.
+      #
+      # Size 2 so that two transactions submitted at once share a block, which is
+      # what the namespace-isolation matrix needs to observe
+      # (integration/namespace_isolation_test.go); at 1 every block held a single
+      # transaction and a block carrying two namespaces was unreachable. Exactly 2
+      # rather than more, because a pair then fills the batch and cuts at once
+      # instead of waiting out the timeout.
+      #
+      # The timeout is what a lone transaction waits for, so it is the cost the
+      # other cases pay for this: short enough not to dominate a sequential test,
+      # long enough to still batch a concurrent pair under load.
+      SC_ORDERER_BLOCK_SIZE: "2"
+      SC_ORDERER_BLOCK_TIMEOUT: "100ms"
     healthcheck:
       test: ["CMD-SHELL", "nc -z localhost 7001"]
       interval: 2s
