@@ -84,6 +84,12 @@ NS2         ?= synthetic
 POLICY      ?= AND('Org1MSP.member')
 NETWORK     ?= fabric-x
 
+# Second namespace for the namespace-isolation matrix
+# (integration/namespace_isolation_test.go). It carries the same single-org
+# policy as NS, so a difference between the two gateways is attributable to namespace
+# handling rather than to endorsement policy — which is why it is not NS_2OF2.
+NS_B        ?= basic2
+
 # Second namespace with a 2-of-2 policy. Separate from NS/POLICY so the
 # stricter policy here doesn't affect the existing single-org test-x cases.
 NS_2OF2     ?= basic2of2
@@ -172,10 +178,32 @@ start-x:  ## Start the fabric-x test network (docker)
 	[ "$$ok" = 1 ] || { echo "Error: test committer not healthy after $(READY_ATTEMPTS) attempts"; exit 1; }
 	$(call create-namespace,$(NS),$(POLICY))
 	$(call create-namespace,$(NS_2OF2),$(POLICY_2OF2))
+	$(call create-namespace,$(NS_B),$(POLICY))
 
 .PHONY: test-x
 test-x: ## Integration cases against a running fabric-x network
 	@go test -timeout 60s -v -run ^TestFabricX$$ ./integration
+
+# The namespace-isolation matrix against the fabric-x test committer. Runs
+# against the same `make start-x` network as test-x: it creates NS_B as well,
+# and the orderer's block size of 2 (compose.fabric-x.yml) is what lets the two
+# namespaces share a block.
+.PHONY: test-ns-x
+test-ns-x:
+	@go test -timeout 120s -v -count=1 -run ^TestNamespaceIsolationFabricX$$ ./integration
+
+# The namespace-isolation matrix against a running Fablo network (classic
+# fabric). Requires `make start-fablo` with a second chaincode declared in
+# testdata/fablo/fablo-config.json.
+.PHONY: test-ns-fablo
+test-ns-fablo:
+	@go test -timeout 360s -v -count=1 -run ^TestNamespaceIsolationFablo$$ ./integration
+
+# The namespace-isolation matrix against the in-process mocks. Needs no network,
+# so this is the fast loop and the baseline the real backends are compared with.
+.PHONY: test-ns-local
+test-ns-local:
+	@go test -timeout 120s -v -count=1 -run '^TestNamespaceIsolationLocal(X)?$$' ./integration
 
 .PHONY: perf-smoke
 perf-smoke:  ## Short perf replay against a running fabric-x network
