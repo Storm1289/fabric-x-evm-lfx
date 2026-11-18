@@ -36,6 +36,10 @@ type EVMConfig struct {
 	ChainConfig *params.ChainConfig
 	// MaxTxGas caps msg.GasLimit before execution. 0 means unlimited.
 	MaxTxGas uint64
+	// ChargeGas makes transactions pay for gas at their own gas price, as on
+	// Ethereum. The default, false, zeroes every gas price before execution, so
+	// no transaction needs a balance to pay for gas.
+	ChargeGas bool
 }
 
 // KVSSnapshotter is the port execution uses to obtain a versioned read snapshot
@@ -80,20 +84,27 @@ func NewEVMEngine(namespace string, kvs KVSSnapshotter, evmConfig EVMConfig, mon
 // (non-zero); the gateway always stamps one value per ExecuteTransaction.
 func (e *EVMEngine) Execute(ctx context.Context, tx *types.Transaction, blockTime uint64) (endorsement.ExecutionResult, error) {
 	logger.Debugf("EVMEngine.Execute() called with tx=%s blockTime=%d", tx.Hash().Hex(), blockTime)
-	ex, err := e.newExecutor(nil, blockTime)
+	ex, err := e.NewTxExecutor(nil, blockTime)
 	if err != nil {
 		logger.Warnf("EVMEngine.Execute() tx=%s failed to create executor: %v", tx.Hash().Hex(), err)
 		return endorsement.ExecutionResult{}, err
 	}
 	defer ex.Close()
+	return Endorse(ex, tx, blockTime)
+}
 
+// Endorse runs tx on ex and shapes the outcome into an endorsement result: a
+// success, a revert or an exec failure are all committed outcomes; a
+// pre-execution rejection is an error. blockTime is recorded in the result's
+// metadata. The caller owns ex and closes it.
+func Endorse(ex *Executor, tx *types.Transaction, blockTime uint64) (endorsement.ExecutionResult, error) {
 	ret, usedGas, err := ex.Send(tx)
 	if err != nil {
 		_, isExecFailure := errors.AsType[*ExecFailure](err)
 		switch {
 		case errors.Is(err, vm.ErrExecutionReverted):
 			// Revert: a committed outcome, carrying the revert data as its reason.
-			logger.Debugf("EVMEngine.Execute() tx=%s reverted: %v", tx.Hash().Hex(), err)
+			logger.Debugf("Endorse() tx=%s reverted: %v", tx.Hash().Hex(), err)
 			return NewResult(ex.state.Result(), nil, &endorsementpb.ExecutionMetadata{
 				Status:    endorsementpb.ExecutionStatus_EXECUTION_STATUS_REVERTED,
 				Reason:    ret,
@@ -103,7 +114,7 @@ func (e *EVMEngine) Execute(ctx context.Context, tx *types.Transaction, blockTim
 		case isExecFailure:
 			// Valid tx whose EVM execution faulted without reverting (out of gas,
 			// invalid opcode, ...): also a committed outcome, with no reason to carry.
-			logger.Warnf("EVMEngine.Execute() tx=%s exec failure: %v", tx.Hash().Hex(), err)
+			logger.Warnf("Endorse() tx=%s exec failure: %v", tx.Hash().Hex(), err)
 			return NewResult(ex.state.Result(), nil, &endorsementpb.ExecutionMetadata{
 				Status:    endorsementpb.ExecutionStatus_EXECUTION_STATUS_EXEC_FAILED,
 				GasUsed:   usedGas,
@@ -111,12 +122,12 @@ func (e *EVMEngine) Execute(ctx context.Context, tx *types.Transaction, blockTim
 			}, err.Error())
 		default:
 			// Pre-execution rejection (bad signature, nonce, ...): never included in a block.
-			logger.Warnf("EVMEngine.Execute() tx=%s rejected: %v", tx.Hash().Hex(), err)
+			logger.Warnf("Endorse() tx=%s rejected: %v", tx.Hash().Hex(), err)
 			return endorsement.ExecutionResult{}, err
 		}
 	}
 
-	logger.Debugf("EVMEngine.Execute() tx=%s succeeded logs=%d gasUsed=%d", tx.Hash().Hex(), len(ex.state.Logs()), usedGas)
+	logger.Debugf("Endorse() tx=%s succeeded logs=%d gasUsed=%d", tx.Hash().Hex(), len(ex.state.Logs()), usedGas)
 	return NewResult(ex.state.Result(), ex.state.Logs(), &endorsementpb.ExecutionMetadata{
 		Status:    endorsementpb.ExecutionStatus_EXECUTION_STATUS_SUCCESS,
 		GasUsed:   usedGas,
@@ -161,7 +172,7 @@ func NewResult(rws blocks.ReadWriteSet, logs []Log, md *endorsementpb.ExecutionM
 func (e *EVMEngine) Call(msg ethereum.CallMsg, blockNumber *big.Int) (ret []byte, maxUsedGas uint64, err error) {
 	logger.Debugf("EVMEngine.Call() called with to=%s blockNumber=%v", msg.To, blockNumber)
 	blockTime := uint64(time.Now().Unix())
-	ex, err := e.newExecutor(blockNumber, blockTime)
+	ex, err := e.NewTxExecutor(blockNumber, blockTime)
 	if err != nil {
 		logger.Warnf("EVMEngine.Call() failed to create executor: %v", err)
 		return nil, 0, err
@@ -226,10 +237,12 @@ func resolveStateBlockRef(blockNumber *big.Int) *uint64 {
 	return &n
 }
 
-// newExecutor creates a fresh executor with an isolated StateDB.
-// blockNumber selects the Fabric block height for the state snapshot (nil = latest).
-// blockTime is the Unix second used for EVM block.timestamp (required, non-zero).
-func (e *EVMEngine) newExecutor(blockNumber *big.Int, blockTime uint64) (*Executor, error) {
+// NewTxExecutor creates a fresh executor with an isolated StateDB over this
+// engine's state. blockNumber selects the Fabric block height for the state
+// snapshot (nil = latest) and is also the EVM block number. blockTime is the
+// Unix second used for EVM block.timestamp (required, non-zero). The caller
+// closes the executor.
+func (e *EVMEngine) NewTxExecutor(blockNumber *big.Int, blockTime uint64) (*Executor, error) {
 	ref := resolveStateBlockRef(blockNumber)
 
 	// Begin a new reader to get snapshot isolation
@@ -277,11 +290,12 @@ func (e *EVMEngine) newSnapshotAt(blockNumber *big.Int) (ExtendedStateDB, ReadSt
 
 // Executor is a per-transaction EVM execution context.
 type Executor struct {
-	state    ExtendedStateDB
-	reader   ReadStore // reader that must be closed when done
-	ChainCfg *params.ChainConfig
-	BlockCtx vm.BlockContext
-	maxTxGas uint64
+	state     ExtendedStateDB
+	reader    ReadStore // reader that must be closed when done
+	ChainCfg  *params.ChainConfig
+	BlockCtx  vm.BlockContext
+	maxTxGas  uint64
+	chargeGas bool
 }
 
 // NewExecutor creates an Executor with the provided StateDB and reader.
@@ -289,7 +303,6 @@ type Executor struct {
 // blockTime is the Unix second for block.timestamp and must be non-zero.
 // evmConfig.ChainConfig must be set.
 // The caller is responsible for closing the reader when done with the Executor.
-// The stateDB parameter accepts ExtendedStateDB interface to allow DualStateDB for testing.
 func NewExecutor(stateDB ExtendedStateDB, reader ReadStore, blockNumber *big.Int, blockTime uint64, evmConfig EVMConfig) (*Executor, error) {
 	if evmConfig.ChainConfig == nil {
 		return nil, fmt.Errorf("evmConfig.ChainConfig must be set")
@@ -324,11 +337,12 @@ func NewExecutor(stateDB ExtendedStateDB, reader ReadStore, blockNumber *big.Int
 	}
 
 	return &Executor{
-		state:    stateDB,
-		reader:   reader,
-		ChainCfg: evmConfig.ChainConfig,
-		BlockCtx: blockCtx,
-		maxTxGas: evmConfig.MaxTxGas,
+		state:     stateDB,
+		reader:    reader,
+		ChainCfg:  evmConfig.ChainConfig,
+		BlockCtx:  blockCtx,
+		maxTxGas:  evmConfig.MaxTxGas,
+		chargeGas: evmConfig.ChargeGas,
 	}, nil
 }
 
@@ -478,7 +492,7 @@ func (h *Executor) Send(tx *types.Transaction) (ret []byte, usedGas uint64, err 
 }
 
 // execute applies production defaults then runs the EVM via ApplyMessage.
-// Gas prices are always zeroed (free gas) so buyGas never requires ETH balance.
+// Gas prices are zeroed (free gas, unless EVMConfig.ChargeGas is set) so buyGas never requires ETH balance.
 // If MaxTxGas is set, msg.GasLimit is capped before execution.
 func (h *Executor) execute(msg *core.Message) (ret []byte, usedGas, maxUsedGas uint64, err error) {
 	if msg.GasLimit == 0 {
@@ -486,9 +500,11 @@ func (h *Executor) execute(msg *core.Message) (ret []byte, usedGas, maxUsedGas u
 	}
 
 	// Free gas: zero all prices so buyGas never requires ETH balance from the sender.
-	msg.GasPrice = new(uint256.Int)
-	msg.GasFeeCap = new(uint256.Int)
-	msg.GasTipCap = new(uint256.Int)
+	if !h.chargeGas {
+		msg.GasPrice = new(uint256.Int)
+		msg.GasFeeCap = new(uint256.Int)
+		msg.GasTipCap = new(uint256.Int)
+	}
 
 	// Cap gas limit for DoS protection.
 	if h.maxTxGas > 0 && msg.GasLimit > h.maxTxGas {
