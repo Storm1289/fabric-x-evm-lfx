@@ -217,6 +217,7 @@ func TestConvertToDomain_StatusAndGasFromPayload(t *testing.T) {
 		assert.Equal(t, w.gas, etx.GasUsed, "%s gas", etx.FabricTxID)
 		assert.Equal(t, w.cumulative, etx.CumulativeGasUsed, "%s cumulative gas", etx.FabricTxID)
 	}
+	assert.Equal(t, uint64(101000), got.GasUsed, "block gas")
 }
 
 func TestConvertToDomain_SkipsInvalidEthBytes(t *testing.T) {
@@ -485,6 +486,47 @@ func TestChain_Handle_OtherFailuresAreStored(t *testing.T) {
 			assert.Equal(t, status, got.FabricTxStatus)
 		})
 	}
+}
+
+// The stored block's gas equals its last stored receipt's cumulative gas, with
+// an MVCC conflict (dropped, retried later) adding nothing.
+func TestChain_Handle_StoresBlockGasUsed(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "gateway.db")
+	chain, err := NewChain(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = chain.Close() })
+
+	key := newKey(t)
+	to := common.HexToAddress("0x1111111111111111111111111111111111111111")
+	tx := func(id string, nonce uint64, status blocks.Status, gas uint64) (blocks.Transaction, []byte) {
+		signed, err := types.SignTx(types.NewTransaction(nonce, to, big.NewInt(1), 21000, big.NewInt(0), nil), types.HomesteadSigner{}, key)
+		require.NoError(t, err)
+		raw, err := signed.MarshalBinary()
+		require.NoError(t, err)
+		return blocks.Transaction{
+			ID: id, Number: int64(nonce), Status: status, EventName: co.ProposalTypeEVMTx,
+			InputArgs: [][]byte{raw}, Payload: execPayload(t, endorsementpb.ExecutionStatus_EXECUTION_STATUS_SUCCESS, gas),
+		}, raw
+	}
+	alice, _ := tx("alice", 0, blocks.StatusCommitted, 21000)
+	carol, _ := tx("carol", 1, blocks.StatusMVCCConflict, 50000)
+	dave, daveRaw := tx("dave", 2, blocks.StatusCommitted, 21000)
+
+	require.NoError(t, chain.Handle(context.Background(), blocks.Block{
+		Number:       1,
+		Hash:         make([]byte, 32),
+		Transactions: []blocks.Transaction{alice, carol, dave},
+	}))
+
+	stored, err := chain.Store.GetBlockByNumber(context.Background(), 1, false)
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	assert.Equal(t, uint64(42000), stored.GasUsed)
+
+	last, err := chain.Store.GetTransactionByHash(context.Background(), ethTxHash(t, daveRaw).Bytes())
+	require.NoError(t, err)
+	require.NotNil(t, last)
+	assert.Equal(t, stored.GasUsed, last.CumulativeGasUsed, "block gas must equal the last receipt's cumulative gas")
 }
 
 // ethTxHash recovers the Ethereum hash from marshalled transaction bytes.

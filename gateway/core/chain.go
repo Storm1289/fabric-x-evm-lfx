@@ -198,6 +198,7 @@ func ConvertToDomain(b blocks.Block) (domain.Block, error) {
 
 		ebl.Transactions = append(ebl.Transactions, etx)
 	}
+	ebl.GasUsed = cumulativeGas
 
 	return ebl, nil
 }

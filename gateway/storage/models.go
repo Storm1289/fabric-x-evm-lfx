@@ -11,6 +11,7 @@ type Block struct {
 	StateRoot   []byte
 	Timestamp   int64
 	ExtraData   []byte
+	GasUsed     int64
 }
 
 type Log struct {

@@ -6,7 +6,8 @@ CREATE TABLE
         parent_hash BLOB UNIQUE CHECK (parent_hash IS NULL OR length (parent_hash) = 32), -- NULL for genesis block; UNIQUE enforces valid chain linkage
         state_root BLOB NOT NULL CHECK (length (state_root) = 32),
         timestamp BIGINT NOT NULL CHECK (timestamp >= 0),
-        extra_data BLOB
+        extra_data BLOB,
+        gas_used BIGINT NOT NULL CHECK (gas_used >= 0) -- total of the block's transactions
     );
 
 CREATE INDEX IF NOT EXISTS idx_blocks_hash ON blocks (block_hash);

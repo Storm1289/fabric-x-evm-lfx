@@ -265,7 +265,7 @@ func rpcBlock(b *domain.Block, full bool) *RPCBlock {
 		ExtraData:        hexutil.Bytes{},
 		Size:             0,
 		GasLimit:         hexutil.Uint64(0),
-		GasUsed:          hexutil.Uint64(0),
+		GasUsed:          hexutil.Uint64(b.GasUsed),
 		BaseFeePerGas:    hexutil.Big(*big.NewInt(0)),
 		Timestamp:        hexutil.Uint64(b.Timestamp),
 		Transactions:     transactions,

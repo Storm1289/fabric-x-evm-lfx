@@ -753,6 +753,7 @@ func TestInsertBlock_WithTransactionsAndLogs(t *testing.T) {
 		ParentHash:  makeHash(0x0F),
 		StateRoot:   makeHash(0x01),
 		Timestamp:   1234567890,
+		GasUsed:     42000,
 		Transactions: []domain.Transaction{
 			{
 				TxHash:            txHash,
@@ -806,6 +807,17 @@ func TestInsertBlock_WithTransactionsAndLogs(t *testing.T) {
 	}
 	if retrievedBlock.Timestamp != 1234567890 {
 		t.Errorf("expected timestamp 1234567890, got %d", retrievedBlock.Timestamp)
+	}
+	if retrievedBlock.GasUsed != 42000 {
+		t.Errorf("block gas = %d, want 42000", retrievedBlock.GasUsed)
+	}
+	byHash, err := store.GetBlockByHash(t.Context(), blockHash, false)
+	if err != nil || byHash == nil || byHash.GasUsed != 42000 {
+		t.Errorf("GetBlockByHash gas = %+v (err %v), want 42000", byHash, err)
+	}
+	latest, err := store.LatestBlock(t.Context(), false)
+	if err != nil || latest == nil || latest.GasUsed != 42000 {
+		t.Errorf("LatestBlock gas = %+v (err %v), want 42000", latest, err)
 	}
 
 	// Verify transaction was inserted

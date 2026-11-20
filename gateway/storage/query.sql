@@ -36,10 +36,11 @@ INSERT INTO
         parent_hash,
         state_root,
         timestamp,
-        extra_data
+        extra_data,
+        gas_used
     )
 VALUES
-    (?, ?, ?, ?, ?, ?) ON CONFLICT (block_number) DO NOTHING;
+    (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (block_number) DO NOTHING;
 
 -- name: InsertTransaction :exec
 INSERT INTO

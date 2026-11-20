@@ -112,6 +112,19 @@ func TestGetBlockByNumber_Happy(t *testing.T) {
 	}
 }
 
+func TestGetBlockByNumber_GasUsed(t *testing.T) {
+	b := mustBlock(7, testBlockHash)
+	b.GasUsed = 42000
+	api := NewEthAPI(&stubBackend{blockByNumber: map[uint64]*domain.Block{7: b}})
+	got, err := api.GetBlockByNumber(context.Background(), rpc.BlockNumber(7), false)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got == nil || uint64(got.GasUsed) != 42000 {
+		t.Fatalf("block = %+v, want gasUsed 42000", got)
+	}
+}
+
 func TestGetBlockByNumber_NotFound(t *testing.T) {
 	api := NewEthAPI(&stubBackend{})
 	got, err := api.GetBlockByNumber(context.Background(), rpc.BlockNumber(99), false)
