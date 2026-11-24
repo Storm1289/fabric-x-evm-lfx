@@ -1223,3 +1223,212 @@ func TestDepGraphQueue_FullChannelOnAdoptDebugPanics(t *testing.T) {
 	}
 	require.Nil(t, q.IsPending(lost.Hash()), "a dropped retry must not stay tracked")
 }
+
+// The tests below cover the seam between the two features: forest scheduling,
+// which parks the members that clash with the one running, and the MVCC retry,
+// which keeps a conflicted transaction tracked instead of finishing it. Each
+// feature has its own tests above; these drive both at once.
+
+// parkedOn reports how many forest members are waiting on tx, which is what must
+// not move while tx is being retried.
+func parkedOn(q *DepGraphQueue, tx *types.Transaction) (int, bool) {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	t, ok := q.tracked[tx.Hash()]
+	if !ok {
+		return 0, false
+	}
+	return len(t.next), true
+}
+
+// A retried transaction has not written yet, so the members parked on it must
+// stay parked: they clash with it, and starting one now would put two clashing
+// transactions in flight at once. This is the same reason retry keeps its node.
+func TestDepGraphQueue_RetriedForestMemberKeepsTheRestParked(t *testing.T) {
+	q, _ := newDepQueue(t)
+	a, b, c := txWithNonce(1), txWithNonce(2), txWithNonce(3)
+	forest := heldForest(t, q, a, b, c)
+
+	q.markReady([]dependencygraph.TxNodeBatch{forest})
+	requireReady(t, q, 1)
+	require.Equal(t, a.Hash(), dequeueHash(t, q))
+
+	parked, tracked := parkedOn(q, a)
+	require.True(t, tracked)
+	require.Equal(t, 2, parked, "b and c start out parked on a")
+
+	// a conflicts, so it is executed again rather than finished.
+	require.NoError(t, q.Handle(context.Background(), mvccConflictBlock(a)))
+
+	// Offered back exactly once, and by the retry rather than by the forest.
+	requireReady(t, q, 1)
+	require.Never(t, func() bool { return readyCount(q) > 1 }, 200*time.Millisecond, 10*time.Millisecond,
+		"a retry must not also start a member parked behind it")
+	require.Equal(t, a.Hash(), dequeueHash(t, q))
+
+	parked, tracked = parkedOn(q, a)
+	require.True(t, tracked, "a stays tracked across the retry")
+	require.Equal(t, 2, parked, "b and c are still parked on a after the retry")
+}
+
+// Once the retried transaction finally commits, the forest picks up where it left
+// off: the next member starts, and the one after it is parked on that.
+func TestDepGraphQueue_ForestResumesAfterARetry(t *testing.T) {
+	q, _ := newDepQueue(t)
+	a, b, c := txWithNonce(1), txWithNonce(2), txWithNonce(3)
+	forest := heldForest(t, q, a, b, c)
+
+	q.markReady([]dependencygraph.TxNodeBatch{forest})
+	requireReady(t, q, 1)
+	require.Equal(t, a.Hash(), dequeueHash(t, q))
+
+	require.NoError(t, q.Handle(context.Background(), mvccConflictBlock(a)))
+	requireReady(t, q, 1)
+	require.Equal(t, a.Hash(), dequeueHash(t, q))
+
+	// The second attempt commits, which releases the forest.
+	require.NoError(t, q.Handle(context.Background(), fabricCommittedBlock(a)))
+	require.Nil(t, q.IsPending(a.Hash()), "a is finished once it commits")
+
+	requireReady(t, q, 1)
+	require.Equal(t, b.Hash(), dequeueHash(t, q), "b runs once a is done")
+	parked, tracked := parkedOn(q, b)
+	require.True(t, tracked)
+	require.Equal(t, 1, parked, "c is now parked on b")
+
+	require.NoError(t, q.Handle(context.Background(), fabricCommittedBlock(b)))
+	requireReady(t, q, 1)
+	require.Equal(t, c.Hash(), dequeueHash(t, q), "c runs last")
+}
+
+// A member can outlast several attempts at the transaction ahead of it. The whole
+// retry budget is spent without the forest moving.
+func TestDepGraphQueue_ForestHoldsAcrossRepeatedRetries(t *testing.T) {
+	q, _ := newDepQueue(t)
+	a, b := txWithNonce(1), txWithNonce(2)
+	forest := heldForest(t, q, a, b)
+
+	q.markReady([]dependencygraph.TxNodeBatch{forest})
+	requireReady(t, q, 1)
+	require.Equal(t, a.Hash(), dequeueHash(t, q))
+
+	// Every attempt the budget allows, each time offering only a back.
+	for attempt := range defaultMaxMVCCRetries {
+		require.NoError(t, q.Handle(context.Background(), mvccConflictBlock(a)))
+		requireReady(t, q, 1)
+		require.Equal(t, a.Hash(), dequeueHash(t, q), "attempt %d must offer a, not b", attempt+2)
+
+		parked, tracked := parkedOn(q, a)
+		require.True(t, tracked)
+		require.Equal(t, 1, parked, "b stays parked on attempt %d", attempt+2)
+	}
+
+	require.NoError(t, q.Handle(context.Background(), fabricCommittedBlock(a)))
+	requireReady(t, q, 1)
+	require.Equal(t, b.Hash(), dequeueHash(t, q), "b runs only once a is done")
+}
+
+// Giving up is a final outcome, so the forest must move on rather than stay
+// parked on a transaction that will never run again. A debug build panics first,
+// for the reason giveUp documents: the members released here face whatever
+// refused the transaction ahead of them.
+func TestDepGraphQueue_GivingUpStartsTheNextForestMember(t *testing.T) {
+	e := newKeyedEndorser(t)
+	q := NewDepGraphQueue(&config.DepGraphQueue{MaxMVCCRetries: 1})
+	q.Bind(e)
+	t.Cleanup(q.Close)
+
+	a, b := txWithNonce(1), txWithNonce(2)
+	forest := heldForest(t, q, a, b)
+
+	q.markReady([]dependencygraph.TxNodeBatch{forest})
+	requireReady(t, q, 1)
+	require.Equal(t, a.Hash(), dequeueHash(t, q))
+
+	// The one attempt the budget allows.
+	require.NoError(t, q.Handle(context.Background(), mvccConflictBlock(a)))
+	requireReady(t, q, 1)
+	require.Equal(t, a.Hash(), dequeueHash(t, q))
+	parked, _ := parkedOn(q, a)
+	require.Equal(t, 1, parked, "b is still parked while a has budget left")
+
+	// The next conflict is past the budget, so a is given up on.
+	exhaust := func() { _ = q.Handle(context.Background(), mvccConflictBlock(a)) }
+	if fxcommon.DebugBuild {
+		require.Panics(t, exhaust, "a debug build surfaces a transaction it gave up on")
+		return
+	}
+	exhaust()
+
+	require.Nil(t, q.IsPending(a.Hash()), "a is untracked once it is given up on")
+	requireReady(t, q, 1)
+	require.Equal(t, b.Hash(), dequeueHash(t, q), "b must not stay parked on a transaction that is gone")
+}
+
+// A conflict for a transaction this queue has not started belongs to an earlier
+// attempt, and another attempt is already in flight for it, so nothing further is
+// scheduled. Here the transaction is a forest member parked behind one it clashes
+// with: it must still run exactly once, when its turn comes, and must not be put
+// on the ready list by the conflict as well.
+func TestDepGraphQueue_ConflictForParkedForestMemberSchedulesNothing(t *testing.T) {
+	q, _ := newDepQueue(t)
+	a, b, c := txWithNonce(1), txWithNonce(2), txWithNonce(3)
+	forest := heldForest(t, q, a, b, c)
+
+	q.markReady([]dependencygraph.TxNodeBatch{forest})
+	requireReady(t, q, 1)
+	require.Equal(t, a.Hash(), dequeueHash(t, q))
+	parked, _ := parkedOn(q, a)
+	require.Equal(t, 2, parked, "b and c are parked on a")
+
+	// One block: a commits, and b comes back conflicted while still parked on a.
+	blk := fabricCommittedBlock(a)
+	blk.Transactions = append(blk.Transactions, mvccConflictBlock(b).Transactions...)
+	require.NoError(t, q.Handle(context.Background(), blk),
+		"a conflict for an unstarted transaction is a legitimate state, not a fatal one")
+
+	require.NotNil(t, q.IsPending(b.Hash()), "b keeps its entry; an attempt is still coming")
+	requireReady(t, q, 1)
+	require.Never(t, func() bool { return readyCount(q) > 1 }, 200*time.Millisecond, 10*time.Millisecond,
+		"b must be started once by the forest, not also by the conflict")
+	require.Equal(t, b.Hash(), dequeueHash(t, q), "b runs exactly once, when its turn comes")
+
+	// And the forest still finishes in order behind it.
+	require.NoError(t, q.Handle(context.Background(), fabricCommittedBlock(b)))
+	requireReady(t, q, 1)
+	require.Equal(t, c.Hash(), dequeueHash(t, q))
+}
+
+// The same gate, reached the way a restart reaches it: the client resubmits a
+// transaction whose earlier attempt is still unresolved, so the entry is fresh and
+// has no node while the conflict belongs to that earlier attempt. The fresh
+// attempt must be left to land, and must not be submitted a second time.
+func TestDepGraphQueue_ConflictForResubmittedUnstartedTxSchedulesNothing(t *testing.T) {
+	q, e := newDepQueue(t)
+	blocker, resubmitted := txWithNonce(1), txWithNonce(2)
+	e.touches(blocker, "balance")
+	e.touches(resubmitted, "balance")
+
+	// blocker holds the key, so the resubmitted tx is tracked but never started.
+	q.Enqueue(blocker)
+	requireReady(t, q, 1)
+	require.Equal(t, blocker.Hash(), dequeueHash(t, q))
+	require.NoError(t, q.Enqueue(resubmitted))
+	require.NotNil(t, q.IsPending(resubmitted.Hash()))
+	require.Never(t, func() bool { return readyCount(q) > 0 }, 300*time.Millisecond, 10*time.Millisecond,
+		"the resubmitted tx waits on the key blocker holds")
+
+	// The pre-restart attempt's conflict arrives now.
+	require.NoError(t, q.Handle(context.Background(), mvccConflictBlockWithRaw(t, resubmitted)),
+		"a conflict for a transaction still awaiting release must not be fatal")
+	require.NotNil(t, q.IsPending(resubmitted.Hash()), "the fresh attempt keeps its entry")
+	require.Never(t, func() bool { return readyCount(q) > 0 }, 200*time.Millisecond, 10*time.Millisecond,
+		"the conflict must not schedule it ahead of the key it is waiting on")
+
+	// Once the key frees up it runs, exactly once.
+	require.NoError(t, q.Handle(context.Background(), fabricCommittedBlock(blocker)))
+	requireReady(t, q, 1)
+	require.Equal(t, resubmitted.Hash(), dequeueHash(t, q))
+	require.Never(t, func() bool { return readyCount(q) > 0 }, 200*time.Millisecond, 10*time.Millisecond,
+		"it must not be offered a second time")
+}

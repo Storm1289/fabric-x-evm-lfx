@@ -812,8 +812,40 @@ func (q *DepGraphQueue) untrackOrRetry(
 			// Conflicted with no entry behind it (a nil value is a missing key),
 			// so there is nothing to retry from and adopt builds one.
 			pending, err = q.adopt(o)
+		case q.tracked[o.hash].node == nil:
+			// Conflicted and tracked, but holding no node. Only startForests hands
+			// a node out, so this queue has not started this transaction -- and yet
+			// an attempt for it is already on the way, which is why nothing is
+			// scheduled here.
+			//
+			// Every failure path in submitToManager calls drop, which untracks, so
+			// a tracked entry without a node is never idle: it is either still
+			// travelling towards the manager, or it is a forest member parked
+			// behind a transaction it clashes with, waiting for startForests to
+			// start it. Either way something will run it.
+			//
+			// That is what separates this from the adopt case above. There the
+			// entry is gone, so nothing is in flight and an attempt has to be
+			// manufactured. Here one exists, and manufacturing a second would
+			// submit the transaction twice: admit overwrites the live entry and
+			// puts another copy on the admitted channel. Appending to the ready
+			// list via retry would do the same, because the member ahead of a
+			// parked one hands the rest of the forest back in this very pass and
+			// startForests would then start it too.
+			//
+			// This is reachable without a second writer on the namespace. After a
+			// restart the client can resubmit a transaction whose pre-restart
+			// attempt is still unresolved: the entry is then fresh while the
+			// conflict belongs to the earlier attempt. A legitimate state, so it is
+			// logged rather than treated as one that should not have arisen.
+			pending = true
+			depGraphLogger.Warnf(
+				"[MVCC-UNSTARTED] tx %s conflicted in block %d but this queue has not started it, "+
+					"so an attempt for it is already in flight and no further one is scheduled; "+
+					"most likely its earlier attempt was still unresolved when the client resubmitted it",
+				o.hash.Hex(), blockNum)
 		default:
-			// Conflicted and tracked: another attempt if the budget allows.
+			// Conflicted, tracked, and submitted: another attempt if the budget allows.
 			pending = q.retry(o.hash)
 			if !pending {
 				err = q.giveUp(o, blockNum)
