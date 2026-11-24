@@ -199,61 +199,19 @@ section).
 
 ## EVM execution differences
 
-**Fork-level opcodes and precompiles**: all EVM opcodes through Osaka are active, including
-`MCOPY` (EIP-5656), `TLOAD`/`TSTORE` (EIP-1153), `BLOBHASH`/`BLOBBASEFEE` (EIP-4844), and the
-BLS12-381 precompiles (EIP-2537). The difference is at the **transaction-type** level: blob
-(type 3) and set-code (type 4) transactions are rejected at submission (see Pre-flight transaction
-validation), so although the opcodes exist, those tx-type code paths are unreachable.
+**Fork support**: a network runs Osaka rules only — `common.BuildChainConfig` activates every fork
+through Osaka at genesis, so all opcodes and precompiles through Osaka are active (`MCOPY`,
+`TLOAD`/`TSTORE`, `BLOBHASH`/`BLOBBASEFEE`, the BLS12-381 precompiles). Blob (type 3) and set-code
+(type 4) transactions are rejected at submission (see Pre-flight transaction validation), so their
+tx-type code paths are unreachable. Pre-Cancun semantics are not supported. The conformance suite
+covers Cancun onward, with each fixture run under its own fork's rules, and all of it passes
+(`testdata/eth_known_failures.json` is empty).
 
-**`SELFDESTRUCT` is partially implemented** (EIP-6780, active from Osaka): `SelfDestruct(addr)`
-zeroes the destructed account's *own* balance, and — only if the contract was created in the same
-transaction — marks it destructed so `HasSelfDestructed` returns `true`. It does **not** transfer
-the balance to the beneficiary inside the StateDB, and it does **not** clear the contract's code
-or storage — so a "destructed" contract stays fully callable afterward: a later call just re-runs
-the same code against the same storage, as if nothing happened. This is a higher-priority gap on
-this page. Cross-transaction cleanup, ETH recovery to the beneficiary, and storage erasure do not
-work as on Ethereum. The logic is also **not fork-aware** — it always applies EIP-6780, so pre-6780
-semantics (full destruction of a pre-existing contract, and the since-removed SELFDESTRUCT gas
-refund) are never reproduced, even when a call or test targets an older fork.
+**`SELFDESTRUCT` follows EIP-6780**: the balance goes to the beneficiary; a contract created in
+the same transaction is also deleted (balance, nonce, code and storage) when the transaction ends.
 
-Implementation note: clearing storage slots requires enumerating all keys for the address
-(non-trivial) and may produce an impractically large RWSet for contracts with many storage entries.
-
-**`GetStorageRoot` is a stub**: it returns the zero hash. This is a state-introspection gap that
-affects storage-root queries and proofs; it does **not** affect EVM execution or
-the EIP-7610 collision guard, which never reads it (see below).
-
-**EIP-7610 create-collision divergence (inherited from go-ethereum)**: per EIP-7610 a
-`CREATE`/`CREATE2` onto an address that already holds storage (but no code or nonce) must fail. We
-run go-ethereum v1.17.3's EVM create path unchanged, and geth v1.17.3 implements EIP-7610 not as a
-general storage check but as a hardcoded allowlist of 28 historical mainnet addresses — the
-collision guard checks nonce + code + that static set, never the storage root. The execution-specs
-`eip7610_create_collision` fixtures use synthetic addresses that hold storage but are not in geth's
-list, so geth's guard — and therefore ours — does not treat them as collisions. This divergence is
-inherited from go-ethereum and affects any geth-based client; it is not a fabric-x-evm bug and is
-unrelated to the `GetStorageRoot` stub.
-
-**Exposure today: none we can find.** Note that a CREATE2 address is chosen directly by the
-deployer (`sender` + `salt` + `initcode` hash) — reaching a specific target costs nothing, it is
-not a collision search. The real precondition is planting storage at that address *before* any
-code exists there, and we can't find a live path to that in fabric-x-evm: normal `SSTORE` only
-ever targets `address(this)`, so storage implies code was there at some point; the one bypass,
-`SELFDESTRUCT`, doesn't clear code either (see above), so the ordinary code-hash check already
-blocks re-deployment there. The only other way to write storage without code, `hardhat_set*`
-direct injection, is in-process test-harness code, never reachable over the network.
-Revisit this if that changes — e.g. a production state-import or migration path ever ships.
-
-**How these surface in equivalence tests**: the conformance harness runs each fixture's transaction
-on the production engine and replays the read-write set it would commit into a state trie, whose
-root must match the fixture's. The fixtures that diverge are the SELFDESTRUCT ones described above:
-an account created and destroyed in the same transaction stays in our write set, where Ethereum
-deletes it. The EIP-7610 create-collision divergence no longer shows up: since tests@v21.0.0 the
-fixtures stop exercising the storage-collision check from Cancun onward.
-
-These known-divergent cases are recorded as expected failures in
-`testdata/eth_known_failures.json` (cause `selfdestruct-partial`). They still run; the baseline
-asserts they keep failing and flags it if one starts passing. All other Osaka-forward state tests
-pass.
+**`GetStorageRoot` is a stub**: it returns the zero hash. This affects storage-root queries and
+proofs, not EVM execution.
 
 **Native ETH balances not funded**: balances are implemented but unused. Accounts have zero ETH 
 balance by default. Value transfers inside the EVM (`CALL` with value, `SELFDESTRUCT` beneficiary, 

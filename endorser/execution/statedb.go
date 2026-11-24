@@ -507,16 +507,21 @@ func (s *StateDB) GetStorageRoot(addr common.Address) common.Hash {
 	return common.Hash{}
 }
 
-// SelfDestruct implements SELFDESTRUCT with EIP-6780 semantics: only fully
-// destroys the account if it was created in the current transaction.
+// SelfDestruct marks addr for destruction at the end of the transaction, as
+// geth's StateDB does: the opcode has already moved the balance, and the
+// account stays readable and callable until Result() deletes it.
+//
+// Only a contract created in the current transaction is marked (EIP-6780). The
+// EIP-6780 opcode never calls this for any other account since Cancun.
 func (s *StateDB) SelfDestruct(addr common.Address) {
-	if prevBalance := s.GetBalance(addr); !prevBalance.IsZero() {
-		s.putState(fxcommon.AccountKey(addr, fxcommon.FieldBalance), fxcommon.EncodeBalance(uint256.NewInt(0)))
+	if _, isNew := s.newContracts[addr]; !isNew {
+		return
 	}
-	if _, isNew := s.newContracts[addr]; isNew {
-		s.journal = append(s.journal, selfDestructEntry{addr: addr})
-		s.selfDestructed[addr] = struct{}{}
+	if _, done := s.selfDestructed[addr]; done {
+		return
 	}
+	s.journal = append(s.journal, selfDestructEntry{addr: addr})
+	s.selfDestructed[addr] = struct{}{}
 }
 
 // HasSelfDestructed checks if an account has self-destructed.
@@ -659,6 +664,7 @@ func (s *StateDB) Result() blocks.ReadWriteSet {
 			writes[e.write.Key] = e.write
 		}
 	}
+	s.destroyAccounts(writes)
 
 	rws := blocks.ReadWriteSet{
 		Reads:  make([]blocks.KVRead, 0, len(reads)),
@@ -671,6 +677,30 @@ func (s *StateDB) Result() blocks.ReadWriteSet {
 		rws.Writes = append(rws.Writes, w)
 	}
 	return rws
+}
+
+// destroyAccounts turns every write to a self-destructed account into a delete
+// and deletes its account fields, so the account leaves state entirely, as geth's
+// Finalise does. Such an account was created in this transaction, so all of its
+// storage is in writes; its fields may predate it (a pre-funded address), so
+// they are deleted whether or not this transaction wrote them.
+func (s *StateDB) destroyAccounts(writes map[string]blocks.KVWrite) {
+	if len(s.selfDestructed) == 0 {
+		return
+	}
+	for key := range writes {
+		if k, ok := fxcommon.ParseStateKey(key); ok {
+			if _, gone := s.selfDestructed[k.Address]; gone {
+				writes[key] = blocks.KVWrite{Key: key, IsDelete: true}
+			}
+		}
+	}
+	for addr := range s.selfDestructed {
+		for _, field := range []string{fxcommon.FieldBalance, fxcommon.FieldNonce, fxcommon.FieldCode} {
+			key := fxcommon.AccountKey(addr, field)
+			writes[key] = blocks.KVWrite{Key: key, IsDelete: true}
+		}
+	}
 }
 
 // Logs returns all non-reverted logs.

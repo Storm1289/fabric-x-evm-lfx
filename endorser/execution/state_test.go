@@ -61,12 +61,6 @@ func TestOpsReplayOnFreshDB(t *testing.T) {
 	val := common.HexToHash("0xdeadbeef")
 	db.SetState(contract, slot, val)
 
-	// Self-destruct ops (TODO: actually destroy the contract)
-	// SelfDestruct signature changed in go-ethereum v1.17.3: no return value.
-	// SelfDestruct6780 was removed entirely (EIP-6780 logic folded into SelfDestruct).
-	db.SelfDestruct(contract)
-	assertEqual(t, "SelfDestruct", db.HasSelfDestructed(contract), true, true)
-
 	// replay on fresh database
 	freshState, err := state.NewWriteDB(Channel, Db2)
 	if err != nil {
@@ -363,7 +357,8 @@ func TestSnapshotRevertRWS(t *testing.T) {
 	})
 }
 
-// EIP-6780: contract created in the same tx is fully destroyed by SELFDESTRUCT.
+// EIP-6780: a contract created in the same tx is fully destroyed by SELFDESTRUCT:
+// it stays usable for the rest of the tx, and the write set deletes it.
 func TestSelfDestruct_NewContract_FullyDestroys(t *testing.T) {
 	originalState, err := state.NewWriteDB(Channel, Db1)
 	if err != nil {
@@ -372,21 +367,72 @@ func TestSelfDestruct_NewContract_FullyDestroys(t *testing.T) {
 	db := snapshotDB(t, originalState, 0)
 
 	contract := newAddress()
+	slot := common.HexToHash("0x01")
+	db.CreateAccount(contract)
 	db.CreateContract(contract)
-	db.AddBalance(contract, uint256.NewInt(100), tracing.BalanceChangeUnspecified)
+	db.SetNonce(contract, 1, tracing.NonceChangeNewContract)
+	db.SetCode(contract, []byte{0x60, 0x00}, tracing.CodeChangeContractCreation)
+	db.SetState(contract, slot, common.HexToHash("0x2a"))
 
 	db.SelfDestruct(contract)
 
 	if !db.HasSelfDestructed(contract) {
 		t.Error("expected contract to be marked self-destructed (EIP-6780: created in same tx)")
 	}
-	if !db.GetBalance(contract).IsZero() {
-		t.Errorf("expected balance=0 after SelfDestruct, got %v", db.GetBalance(contract))
+	// Destruction takes effect at the end of the tx, as in geth.
+	if db.GetCodeSize(contract) == 0 {
+		t.Error("code should remain readable until the end of the transaction")
+	}
+
+	contractKeys := map[string]bool{
+		fxcommon.AccountKey(contract, fxcommon.FieldBalance): true,
+		fxcommon.AccountKey(contract, fxcommon.FieldNonce):   true,
+		fxcommon.AccountKey(contract, fxcommon.FieldCode):    true,
+		fxcommon.StorageKey(contract, slot):                  true,
+	}
+	for _, w := range db.Result().Writes {
+		if !contractKeys[w.Key] {
+			continue
+		}
+		delete(contractKeys, w.Key)
+		if !w.IsDelete {
+			t.Errorf("write %s: want delete, got value %x", w.Key, w.Value)
+		}
+	}
+	for key := range contractKeys {
+		t.Errorf("write set has no delete for %s", key)
 	}
 }
 
-// EIP-6780: pre-existing contract has balance transferred but is NOT destroyed.
-func TestSelfDestruct_PreExistingContract_OnlyTransfersBalance(t *testing.T) {
+// A revert that undoes the SELFDESTRUCT also undoes the destruction.
+func TestSelfDestruct_Reverted(t *testing.T) {
+	originalState, err := state.NewWriteDB(Channel, Db1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := snapshotDB(t, originalState, 0)
+
+	contract := newAddress()
+	db.CreateContract(contract)
+	db.SetCode(contract, []byte{0x60, 0x00}, tracing.CodeChangeContractCreation)
+
+	snap := db.Snapshot()
+	db.SelfDestruct(contract)
+	db.RevertToSnapshot(snap)
+
+	if db.HasSelfDestructed(contract) {
+		t.Error("revert should clear the self-destruct mark")
+	}
+	codeKey := fxcommon.AccountKey(contract, fxcommon.FieldCode)
+	for _, w := range db.Result().Writes {
+		if w.Key == codeKey && w.IsDelete {
+			t.Error("reverted SELFDESTRUCT still deletes the code")
+		}
+	}
+}
+
+// EIP-6780: a pre-existing contract is NOT destroyed (the opcode only moves its balance).
+func TestSelfDestruct_PreExistingContract_NotDestroyed(t *testing.T) {
 	originalState, err := state.NewWriteDB(Channel, Db1)
 	if err != nil {
 		t.Fatal(err)
@@ -402,8 +448,10 @@ func TestSelfDestruct_PreExistingContract_OnlyTransfersBalance(t *testing.T) {
 	if db.HasSelfDestructed(contract) {
 		t.Error("pre-existing contract should NOT be marked self-destructed under EIP-6780")
 	}
-	if !db.GetBalance(contract).IsZero() {
-		t.Errorf("expected balance=0 after SelfDestruct (balance always transfers), got %v", db.GetBalance(contract))
+	for _, w := range db.Result().Writes {
+		if w.IsDelete {
+			t.Errorf("pre-existing contract: unexpected delete of %s", w.Key)
+		}
 	}
 }
 
