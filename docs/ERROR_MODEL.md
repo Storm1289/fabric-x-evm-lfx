@@ -54,7 +54,17 @@ In scope:
   gateway through the endorser, and the commit-notification handlers the synchronizer
   runs per block.
 - The resume height, because panicking is a designed outcome and the restart point
-  decides whether a restart is safe.
+  decides whether a restart is safe. A restart subscribes from one past the height the
+  block store reports, and the block store is the first handler in the chain, so a
+  restart never replays a block for the handlers behind it — it skips one. A panic in
+  `Gateway.Handle` therefore loses that block's transactions for the queue and the nonce
+  gate for good.
+- Making a retried commit handler replay-safe, because a per-handler retry is what hands
+  the same block to the same handler twice. `Gateway.Handle` is the one that cannot take
+  it: it has no record of what it has already handled, and a re-delivered block whose
+  transactions conflicted reaches `adopt`, which executes and submits them again. Each
+  handler that is retried keeps the height it last completed and returns early at or
+  below it.
 - Done is defined by the sequencing section: the model is complete for these paths on
   the commit where the last sink rejects `Unknown`.
 
@@ -65,8 +75,6 @@ Out of scope:
   looked at it rather than that it does not matter.
 - Startup and configuration paths. They run once, in a process that is already refusing
   to start, where a message for an operator beats a policy.
-- Making the non-idempotent commit handlers replay-safe. The retry is per handler
-  precisely so that this work is unnecessary.
 - A client-visible error for a rejected transaction, and the window in which two
   transactions at one nonce both pass pre-flight. Replacement transactions (#62) would
   remove most of the latter; both stay open at the end.
@@ -156,6 +164,27 @@ never have produced — and after this change any one of them takes the gateway 
 production. That is the intended trade: these are conditions that cannot arise unless
 the code is wrong, so the right response is a crash and a stack trace, not a degraded
 node that keeps answering.
+
+That trade is only sound where the condition genuinely cannot be provoked from outside
+the process, so the kind carries two limits. The first is a test a source has to pass
+before it may claim `Programming`: no input can produce this condition, however hostile
+or merely out of date the sender is. A fault a client can trigger by deploying an
+ordinary contract, or a remote endorser can trigger by running last month's build, is
+not an invariant this code guarantees and broke — it is a condition this code does not
+handle, and a release build that crashes on it has handed the deployment's availability
+to whoever sends the next transaction. Such a fault is `Terminal`: still loud in CI and
+in a development run, still counted, and no longer a way to stop the node.
+
+The second limit is who decided the kind. A kind produced inside this process is a
+statement this binary makes about its own invariants, and it is as trustworthy as the
+binary. A kind read back out of `Response.Payload` is a statement another organisation's
+endorser makes, across a version boundary this deployment does not control, and it
+cannot carry the same authority. A kind that arrives from outside this process is
+therefore never `Programming`: `proposalResponse`
+([`client.go:165`](../endorser/client/client.go)) is the one function that lifts a remote
+endorser's payload into a response the gateway reads, so it is the one place the
+demotion to `Terminal` belongs. That is the same argument the unknown-status rows below
+make, applied once at the boundary rather than row by row.
 
 `Terminal` is the opposite case. A misconfigured namespace or a version mismatch between
 the gateway and a remote endorser fails every transaction identically, and crashing
@@ -305,7 +334,7 @@ outside a release build, and nothing else panics at all.
 | Endorsement | The invocation cannot be built: the SDK builder refuses it, or `nsVersion` is unparseable on the classic-Fabric path | `Terminal` | debug-panic, dropped | error log and alert, dropped, no longer fatal in a release build |
 | Endorsement | The endorser call fails in transport | `Transient` | dropped on the first failure | retried under that call's own policy, then dropped |
 | Endorsement | The endorser answers `Unimplemented`, so it does not serve this call at all | `Terminal` | dropped | error log and alert, dropped, no retry |
-| Endorsement | The endorser answers `InvalidArgument`, so it cannot decode a transaction this gateway encoded | `Programming` | dropped | dropped, no retry, fatal |
+| Endorsement | The endorser answers `InvalidArgument`, so it cannot decode a transaction this gateway encoded | `Terminal` | dropped, indistinguishable from a transport fault | error log and alert, dropped, no retry |
 | Endorsement | Rejection because the gateway's and the endorser's clocks disagree by more than the skew window | `Terminal` | dropped, indistinguishable from the next rows | terminal kind on the wire; error log and alert, dropped |
 | Endorsement | Rejection before execution: the signature does not recover, the account cannot pay, the intrinsic gas is too high, or the nonce is below the endorser's state | `Rejected` | dropped, indistinguishable from its neighbours | rejected kind on the wire; answer the submitter, else log and count it apart |
 | Endorsement | The nonce is above the endorser's state, so the endorser is behind | `Transient` | dropped as a rejection | transient kind on the wire; retried while the endorser catches up |
@@ -316,13 +345,15 @@ outside a release build, and nothing else panics at all.
 | Endorsement | The endorser cannot marshal the result metadata or logs, or cannot sign the endorsement | `Programming` | debug-panic, dropped | dropped, and now fatal in a release build too |
 | Endorsement | The status is one the gateway does not know, from a remote endorser, which means a version mismatch | `Terminal` | debug-panic, dropped | error log and alert, dropped, no longer fatal in a release build |
 | Endorsement | The status is one the gateway does not know, from the in-process endorser | `Programming` | debug-panic, dropped | dropped, and now fatal in a release build too |
-| Endorsement | The endorsement carries no read-write set the queue can read | `Programming` | debug-panic, dropped | dropped, and now fatal in a release build too |
+| Endorsement | The local endorser's response carries no read-write set the queue can read | `Programming` | debug-panic, dropped | dropped, and now fatal in a release build too |
+| Endorsement | A remote endorser's response carries no readable read-write set, although its status was committable | `Terminal` | not noticed here: the payload is never examined, and the mismatch surfaces at submission as a bytewise payload difference, dropped as if the orderer had failed | checked where the responses are collected, so the fault names the endorser; error log and alert, dropped, no retry |
 | Scheduling | The dependency manager returns a reference this queue never issued | `Programming` | error log, debug-panic, node handed back | node handed back, per-kind counter, and now fatal in a release build too |
 | Scheduling | A released node belongs to a transaction the queue no longer tracks | not a fault | warning, node handed back | unchanged |
 | Submission | The orderer call fails in transport or times out | `Transient` | dropped and completed | retried once a guard exists against resubmitting a transaction that landed; until then dropped and counted |
-| Submission | The orderer refuses the transaction | `Terminal` | dropped and completed | error log and alert, dropped — provisional, see below |
+| Submission | Two endorsers both endorsed, but their read-write sets differ, so the envelope cannot be packaged — typically one endorser is a block behind ([#421](https://github.com/hyperledger/fabric-x-evm/issues/421)) | `Transient` | the packaging error comes back from `Submit` and is dropped and completed as if the broadcast had failed | re-endorsed rather than resubmitted, since the same envelope fails identically; waiting for the lagging endorser needs its block number ([#463](https://github.com/hyperledger/fabric-x-evm/issues/463)) |
+| Submission | The orderer refuses the envelope: the channel policy does not accept the gateway's signing identity, the envelope is malformed, or the transaction id is a duplicate | `Transient` | invisible to this gateway: the orderer answers asynchronously, the SDK's reply reader logs a non-SUCCESS reply at WARN and returns nothing, and the replies carry no transaction id and no ordering, so none of them can be attributed to an envelope | no sink can act on it until a refusal becomes observable at all ([#467](https://github.com/hyperledger/fabric-x-evm/issues/467)), so there is nothing to classify yet; until then it is one of the ways a transaction is lost after submission ([#423](https://github.com/hyperledger/fabric-x-evm/issues/423)) |
 | After submission | The orderer accepted the transaction and it never appears in a block | no error exists | nothing happens: the node is never handed back, so its dependents wait for good ([#423](https://github.com/hyperledger/fabric-x-evm/issues/423)) | out of reach of this model; it needs a deadline, not a kind |
-| After a commit | A conflicted transaction exhausts the MVCC retry budget | `Programming` | debug-panic, node released | node released, and now fatal in a release build too |
+| After a commit | A conflicted transaction exhausts the MVCC retry budget | `Terminal` | error log naming both possible causes, counter, debug-panic, node released | unchanged, with the kind counted: one cause is an external writer and the other a contract that varies the keys it touches, which a client can deploy |
 | After a commit | A conflicted transaction is untracked and its bytes do not decode | `Terminal` | debug-panic, node released | error log and alert, dropped, no longer fatal in a release build |
 | After a commit | A conflicted transaction is re-admitted and the admitted channel is full | `Transient` | debug-panic | log, count and drop, since there is no caller left to answer |
 | After a commit | A parked transaction released by a commit is refused by the queue | `Transient` or `Programming` | a duplicate is ignored, a closed queue warns, anything else logs and debug-panics | decide from the kind rather than the sentinel: drop a transient refusal, keep the panic for a programming one |
@@ -343,13 +374,13 @@ is why the table records it with no kind. Fixing it means giving the submission 
 deadline, and the deadline needs a guard against resubmitting a transaction that did in
 fact land.
 
-The orderer-refusal row is provisional. `Submitter.Submit` is SDK code, and nothing in
-this repository shows whether a refusal reaches
-[`batch_submitter.go:156`](../gateway/core/batch_submitter.go) distinguishably from a
-transport fault, where every error is treated alike today. If a refusal can be about one
-transaction — a duplicate transaction id, an envelope the orderer will not accept — then
-those cases are `Rejected` or `Programming`, not `Terminal`. The row needs the submitter's
-error surface read before a sink can split on it.
+The orderer-refusal row has no kind a sink can act on yet, because a refusal never reaches
+one: `Broadcast` returns when the envelope is written to the stream, the orderer answers
+asynchronously with no transaction id and no ordering, and the SDK's reply reader logs the
+non-SUCCESS status and returns nothing. Making a refusal observable at all is
+[#467](https://github.com/hyperledger/fabric-x-evm/issues/467), which also has to decide
+whether a reply can be attributed to an envelope; until then a refused transaction is
+counted among the ones lost after submission.
 
 The panic columns move in both directions, which is the whole point of separating the two
 kinds. `Terminal` rows keep their `DebugPanic`, so they still fail CI and a development
