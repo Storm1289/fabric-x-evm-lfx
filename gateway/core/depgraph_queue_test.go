@@ -1432,3 +1432,28 @@ func TestDepGraphQueue_ConflictForResubmittedUnstartedTxSchedulesNothing(t *test
 	require.Never(t, func() bool { return readyCount(q) > 0 }, 200*time.Millisecond, 10*time.Millisecond,
 		"it must not be offered a second time")
 }
+
+// A stale conflict for a resubmitted tx that is started but not yet dequeued must not add a second copy.
+func TestDepGraphQueue_ConflictForStartedResubmissionSchedulesNothing(t *testing.T) {
+	q, _ := newDepQueue(t)
+	a := txWithNonce(1)
+
+	// First attempt: started, dequeued for submission, then the submit fails.
+	require.NoError(t, q.Enqueue(a))
+	requireReady(t, q, 1)
+	require.Equal(t, a.Hash(), dequeueHash(t, q))
+	q.Complete(a.Hash())
+
+	// The wallet resends the same tx; the fresh attempt is started but not dequeued.
+	require.Eventually(t, func() bool { return q.Enqueue(a) == nil }, 2*time.Second, 10*time.Millisecond)
+	requireReady(t, q, 1)
+
+	// The first attempt reached the orderer after all and comes back conflicted.
+	require.NoError(t, q.Handle(context.Background(), mvccConflictBlockWithRaw(t, a)))
+	require.NotNil(t, q.IsPending(a.Hash()), "the fresh attempt keeps its entry")
+	require.Never(t, func() bool { return readyCount(q) > 1 }, 200*time.Millisecond, 10*time.Millisecond,
+		"a stale conflict must not put a second copy on the ready list")
+	require.Equal(t, a.Hash(), dequeueHash(t, q))
+	require.Never(t, func() bool { return readyCount(q) > 0 }, 200*time.Millisecond, 10*time.Millisecond,
+		"it must not be offered a second time")
+}
