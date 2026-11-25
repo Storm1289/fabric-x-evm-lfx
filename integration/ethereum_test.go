@@ -413,10 +413,10 @@ type fixtureEngine struct {
 	blockCtx vm.BlockContext
 }
 
-func (e *fixtureEngine) Execute(_ context.Context, tx *types.Transaction, _ uint64) (endorsement.ExecutionResult, error) {
+func (e *fixtureEngine) Execute(ctx context.Context, tx *types.Transaction, _ uint64) (endorsement.ExecutionResult, error) {
 	// nil reads the latest state, as production does; the fixture's block
 	// number reaches the EVM through BlockCtx.
-	ex, err := e.NewTxExecutor(nil, e.blockCtx.Time)
+	ex, err := e.NewTxExecutor(ctx, nil, e.blockCtx.Time)
 	if err != nil {
 		return endorsement.ExecutionResult{}, err
 	}

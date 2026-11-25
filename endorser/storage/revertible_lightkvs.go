@@ -12,8 +12,8 @@ import (
 	"sync"
 
 	"github.com/hyperledger/fabric-lib-go/common/flogging"
-	"github.com/hyperledger/fabric-x-evm/endorser/execution"
 	"github.com/hyperledger/fabric-x-sdk/blocks"
+	"github.com/hyperledger/fabric-x-sdk/state"
 )
 
 var revertLogger = flogging.MustGetLogger("endorser.storage.revertible_lightkvs")
@@ -49,7 +49,18 @@ func NewRevertibleLightKVS(lightKVS *LightKVS) *RevertibleLightKVS {
 	}
 }
 
-// NewSnapshot starts a new read transaction and returns a Reader for the specified block number.
+// Snapshot implements state.Snapshotter, overriding the promoted LightKVS method.
+func (kvs *RevertibleLightKVS) Snapshot(context.Context) (state.Snapshot, error) {
+	return kvs.newSnapshot(nil)
+}
+
+// SnapshotAt implements state.Snapshotter, overriding the promoted LightKVS method
+// so historical reads get this type's nearest-older fallback.
+func (kvs *RevertibleLightKVS) SnapshotAt(_ context.Context, block uint64) (state.Snapshot, error) {
+	return kvs.newSnapshot(&block)
+}
+
+// newSnapshot starts a new read transaction and returns a Reader for the specified block number.
 // nil means latest; a non-nil value is that exact height (including 0 for genesis).
 //
 // Historical lookups search history by block number (exact match, else the latest
@@ -57,18 +68,18 @@ func NewRevertibleLightKVS(lightKVS *LightKVS) *RevertibleLightKVS {
 // empty blocks leave no Update entry: Fabric block numbers then skip, and a
 // distance-based index misses snapshots that are still in the ring.
 // Readers must call Close() when done to allow garbage collection of old snapshots.
-func (kvs *RevertibleLightKVS) NewSnapshot(blockNumber *uint64) (execution.ReadStore, error) {
+func (kvs *RevertibleLightKVS) newSnapshot(blockNumber *uint64) (state.Snapshot, error) {
 	current := kvs.Current.Load()
 
 	if blockNumber == nil {
-		revertLogger.Debugf("RevertibleLightKVS.NewSnapshot() returning current snapshot: requested=latest returned=%d",
+		revertLogger.Debugf("RevertibleLightKVS.newSnapshot() returning current snapshot: requested=latest returned=%d",
 			current.BlockNumber)
 		return &Reader{Snapshot: current}, nil
 	}
 
 	bn := *blockNumber
 	if bn >= current.BlockNumber {
-		revertLogger.Debugf("RevertibleLightKVS.NewSnapshot() returning current snapshot: requested=%d returned=%d",
+		revertLogger.Debugf("RevertibleLightKVS.newSnapshot() returning current snapshot: requested=%d returned=%d",
 			bn, current.BlockNumber)
 		return &Reader{Snapshot: current}, nil
 	}
@@ -93,26 +104,26 @@ func (kvs *RevertibleLightKVS) NewSnapshot(blockNumber *uint64) (execution.ReadS
 		}
 	}
 	if exact != nil {
-		revertLogger.Debugf("RevertibleLightKVS.NewSnapshot() exact history hit: requested=%d", bn)
+		revertLogger.Debugf("RevertibleLightKVS.newSnapshot() exact history hit: requested=%d", bn)
 		return &Reader{Snapshot: exact}, nil
 	}
 	if best != nil {
-		revertLogger.Debugf("RevertibleLightKVS.NewSnapshot() nearest history hit: requested=%d returned=%d",
+		revertLogger.Debugf("RevertibleLightKVS.newSnapshot() nearest history hit: requested=%d returned=%d",
 			bn, best.BlockNumber)
 		return &Reader{Snapshot: best}, nil
 	}
 
-	err := fmt.Errorf("snapshot not found for block number %d", bn)
-	revertLogger.Debugf("RevertibleLightKVS.NewSnapshot() returning error: requested=%d current=%d err=%v",
+	err := fmt.Errorf("%w: block %d", state.ErrHistoryUnavailable, bn)
+	revertLogger.Debugf("RevertibleLightKVS.newSnapshot() returning error: requested=%d current=%d err=%v",
 		bn, current.BlockNumber, err)
 	return nil, err
 }
 
 // Get overrides the promoted LightKVS.Get so it resolves through this type's
-// own NewSnapshot (with its older-snapshot fallback) instead of LightKVS's
+// own newSnapshot (with its older-snapshot fallback) instead of LightKVS's
 // exact-match-only one.
 func (kvs *RevertibleLightKVS) Get(namespace, key string) (*blocks.WriteRecord, error) {
-	r, err := kvs.NewSnapshot(nil)
+	r, err := kvs.newSnapshot(nil)
 	if err != nil {
 		return nil, err
 	}
@@ -211,7 +222,7 @@ func (kvs *RevertibleLightKVS) applyBlockSequential(blockNum uint64, updates []K
 // will match the actual versions in the peer's ledger, avoiding MVCC conflicts.
 //
 // If the requested block number matches the current snapshot, it's a no-op and returns success.
-// Like NewSnapshot, falls back to the nearest older snapshot when there's no exact
+// Like newSnapshot, falls back to the nearest older snapshot when there's no exact
 // match: an empty block never calls Update, so it never gets a history entry, but
 // state is unchanged since the last one that did. Returns an error only when no
 // snapshot at or before the requested block number exists in history or current.
@@ -244,7 +255,7 @@ func (kvs *RevertibleLightKVS) RevertToBlock(blockNumber uint64) error {
 	// Search history for the requested block number, keeping the LAST match
 	// rather than the first. Startup funding writes its state at the current
 	// height without advancing it, so block 0 exists twice: empty, then funded.
-	// Also track the nearest older snapshot as a fallback (see NewSnapshot):
+	// Also track the nearest older snapshot as a fallback (see newSnapshot):
 	// an empty block leaves no exact entry to find.
 	var targetSnapshot, bestSnapshot *Snapshot
 	targetIndex, bestIndex := -1, -1

@@ -49,6 +49,7 @@ import (
 	"github.com/holiman/uint256"
 	fxcommon "github.com/hyperledger/fabric-x-evm/common"
 	"github.com/hyperledger/fabric-x-sdk/blocks"
+	"github.com/hyperledger/fabric-x-sdk/state"
 )
 
 // Log is a type of event.
@@ -66,10 +67,7 @@ type ExtendedStateDB interface {
 }
 
 // ReadStore is the read interface required to back a StateDB.
-type ReadStore interface {
-	Get(namespace, key string) (*blocks.WriteRecord, error)
-	Close() error
-}
+type ReadStore = state.Snapshot
 
 // revision represents a snapshot point in the journal.
 type revision struct {

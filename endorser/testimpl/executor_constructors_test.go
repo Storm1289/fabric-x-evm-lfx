@@ -21,7 +21,7 @@ func testEVMConfig() execution.EVMConfig {
 
 func TestNewBalancePrimingExecutor_UsesLatestSnapshot(t *testing.T) {
 	kvs := storage.NewLightKVS(8)
-	ex, err := NewBalancePrimingExecutor("testns", kvs, testEVMConfig(), true, nil, nil)
+	ex, err := NewBalancePrimingExecutor(t.Context(), "testns", kvs, testEVMConfig(), true, nil, nil)
 	if err != nil {
 		t.Fatalf("NewBalancePrimingExecutor: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestNewBalancePrimingExecutor_WithPrimingEnabled(t *testing.T) {
 		ContractAddress: common.HexToAddress("0x1111111111111111111111111111111111111111"),
 		MappingPosition: 0,
 	}
-	ex, err := NewBalancePrimingExecutor("testns", kvs, testEVMConfig(), true, cfg, nil)
+	ex, err := NewBalancePrimingExecutor(t.Context(), "testns", kvs, testEVMConfig(), true, cfg, nil)
 	if err != nil {
 		t.Fatalf("NewBalancePrimingExecutor: %v", err)
 	}

@@ -19,8 +19,8 @@ import (
 	pebble "github.com/cockroachdb/pebble/v2"
 	"github.com/cockroachdb/pebble/v2/bloom"
 	"github.com/hyperledger/fabric-lib-go/common/flogging"
-	"github.com/hyperledger/fabric-x-evm/endorser/execution"
 	"github.com/hyperledger/fabric-x-sdk/blocks"
+	"github.com/hyperledger/fabric-x-sdk/state"
 )
 
 // PebbleKVS is a persistent, MVCC key-value store that implements the KVS
@@ -542,14 +542,24 @@ func (p *PebbleKVS) releaseReader(bn uint64) {
 	}
 }
 
-// NewSnapshot returns a read view of the store as of blockNumber. nil means the
+// Snapshot implements state.Snapshotter.
+func (p *PebbleKVS) Snapshot(context.Context) (state.Snapshot, error) {
+	return p.newSnapshot(nil)
+}
+
+// SnapshotAt implements state.Snapshotter.
+func (p *PebbleKVS) SnapshotAt(_ context.Context, block uint64) (state.Snapshot, error) {
+	return p.newSnapshot(&block)
+}
+
+// newSnapshot returns a read view of the store as of blockNumber. nil means the
 // latest committed block at call time, pinning the view so later commits are
 // excluded. A non-nil value is that exact height (including 0 for genesis), and
 // must be inside the retained window: an older block is refused rather than
 // answered with a newer value.
 //
 // The view holds history back at its height until Close, so readers must close.
-func (p *PebbleKVS) NewSnapshot(blockNumber *uint64) (execution.ReadStore, error) {
+func (p *PebbleKVS) newSnapshot(blockNumber *uint64) (state.Snapshot, error) {
 	// Resolve the height and register the pin under the lock a commit holds from
 	// its prune through publishing its checkpoint. Sampling head outside it would
 	// let a commit prune the history this view needs before the pin is in place.
@@ -577,8 +587,8 @@ func (p *PebbleKVS) NewSnapshot(blockNumber *uint64) (execution.ReadStore, error
 	}
 
 	if oldest := p.oldestRetained.Load(); bn < oldest {
-		return nil, fmt.Errorf("snapshot not found for block number %d (retained history starts at %d, head is %d)",
-			bn, oldest, head)
+		return nil, fmt.Errorf("%w: block %d (retained history starts at %d, head is %d)",
+			state.ErrHistoryUnavailable, bn, oldest, head)
 	}
 	p.openReaders[bn]++
 
@@ -590,9 +600,9 @@ func (p *PebbleKVS) NewSnapshot(blockNumber *uint64) (execution.ReadStore, error
 
 // Get implements blocks.RecordGetter, returning the record for (namespace, key) at the
 // latest committed block, or nil if no such record exists. For a read at a specific
-// block, take a NewSnapshot instead.
+// block, take a SnapshotAt instead.
 func (p *PebbleKVS) Get(namespace, key string) (*blocks.WriteRecord, error) {
-	r, err := p.NewSnapshot(nil)
+	r, err := p.newSnapshot(nil)
 	if err != nil {
 		return nil, err
 	}
@@ -642,11 +652,11 @@ func (p *PebbleKVS) Close() error {
 }
 
 // pebbleSnapshot is a point-in-time read view pinned to a block number. It
-// implements execution.ReadStore.
+// implements state.Snapshot.
 //
 // Records are overwritten in place, so isolation is re-derived per read rather
 // than being inherent to the layout (see Get). The history those reads fall back
-// to is held at this view's height by the pin NewSnapshot took and Close drops,
+// to is held at this view's height by the pin newSnapshot took and Close drops,
 // so a reader that is never closed holds history back.
 type pebbleSnapshot struct {
 	// owner holds the database, and is notified on Close so pruning can resume

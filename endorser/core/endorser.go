@@ -48,7 +48,7 @@ type EVMEngineInterface interface {
 	Execute(ctx context.Context, tx *types.Transaction, blockTime uint64) (endorsement.ExecutionResult, error)
 	// Call returns return data and the EVM gas the simulation needed before
 	// EIP-3529 refunds are credited.
-	Call(msg ethereum.CallMsg, blockNumber *big.Int) (ret []byte, maxUsedGas uint64, err error)
+	Call(ctx context.Context, msg ethereum.CallMsg, blockNumber *big.Int) (ret []byte, maxUsedGas uint64, err error)
 	BalanceAt(ctx context.Context, account ethcommon.Address, blockNumber *big.Int) (*big.Int, error)
 	StorageAt(ctx context.Context, account ethcommon.Address, key ethcommon.Hash, blockNumber *big.Int) ([]byte, error)
 	CodeAt(ctx context.Context, account ethcommon.Address, blockNumber *big.Int) ([]byte, error)
@@ -139,7 +139,7 @@ func validateRequestTimestamp(ts, now time.Time, maxFuture, maxPast time.Duratio
 // credited.
 func (f *Endorser) Call(ctx context.Context, msg *ethereum.CallMsg, blockNumber *big.Int) (ret []byte, maxUsedGas uint64, err error) {
 	logger.Debugf("Endorser.Call() called with to=%s blockNumber=%v", msg.To, blockNumber)
-	res, gas, err := f.Engine.Call(*msg, blockNumber)
+	res, gas, err := f.Engine.Call(ctx, *msg, blockNumber)
 	if err != nil {
 		logger.Warnf("Endorser.Call() returning error: %v", err)
 		return res, gas, &common.CallError{Status: classify(err), Message: err.Error(), Data: res}

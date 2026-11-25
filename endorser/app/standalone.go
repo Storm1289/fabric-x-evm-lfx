@@ -13,6 +13,7 @@ import (
 	"github.com/hyperledger/fabric-lib-go/common/flogging"
 	"github.com/hyperledger/fabric-x-sdk/identity"
 	nfabx "github.com/hyperledger/fabric-x-sdk/network/fabricx"
+	"github.com/hyperledger/fabric-x-sdk/state/queryservice"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/hyperledger/fabric-x-evm/common"
@@ -62,7 +63,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 
 	// A query-service store keeps nothing from blocks, so there is nothing to
 	// replay: start at the committer's tip instead of block 0.
-	if q, ok := kvs.(storage.QueryServiceKVS); ok {
+	if q, ok := kvs.(*queryservice.Store); ok {
 		height, err := committerHeight(ctx, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read committer height: %w", err)

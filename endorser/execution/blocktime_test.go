@@ -25,7 +25,7 @@ func TestNewExecutor_UsesProvidedBlockTime(t *testing.T) {
 		t.Fatal(err)
 	}
 	kvs := &testVersionedDBSnapshotter{db: backend}
-	reader, err := kvs.NewSnapshot(nil)
+	reader, err := kvs.Snapshot(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestNewExecutor_ZeroBlockTimeIsRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	kvs := &testVersionedDBSnapshotter{db: backend}
-	reader, err := kvs.NewSnapshot(nil)
+	reader, err := kvs.Snapshot(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,12 +80,12 @@ func TestCall_UsesWallClockBlockTime(t *testing.T) {
 
 	to := ethcommon.HexToAddress("0xdead")
 	before := uint64(time.Now().Unix())
-	_, _, err = eng.Call(ethereum.CallMsg{To: &to}, nil)
+	_, _, err = eng.Call(t.Context(), ethereum.CallMsg{To: &to}, nil)
 	after := uint64(time.Now().Unix())
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	ex, err := eng.NewTxExecutor(nil, before)
+	ex, err := eng.NewTxExecutor(t.Context(), nil, before)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -116,7 +116,7 @@ func assertEqual[T comparable](t *testing.T, label string, got1, got2, expected 
 
 func snapshotDB(t *testing.T, backend *state.VersionedDB, blockNum uint64) *StateDB {
 	wrapper := &testVersionedDBSnapshotter{db: backend}
-	snapshot, err := wrapper.NewSnapshot(&blockNum)
+	snapshot, err := wrapper.SnapshotAt(t.Context(), blockNum)
 	if err != nil {
 		t.Fatal(err)
 	}
