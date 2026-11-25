@@ -47,7 +47,7 @@ func BenchmarkSetStateManySlots(b *testing.B) {
 		backend, err := state.NewWriteDB(Channel, fmt.Sprintf("file:journalbench%d?mode=memory&cache=shared", i))
 		require.NoError(b, err)
 		var blockNum uint64
-		snapshot, err := (&testVersionedDBSnapshotter{db: backend}).NewSnapshot(&blockNum)
+		snapshot, err := (&testVersionedDBSnapshotter{db: backend}).SnapshotAt(b.Context(), blockNum)
 		require.NoError(b, err)
 		db, err := NewStateDB(b.Context(), snapshot, Namespace, false)
 		require.NoError(b, err)

@@ -13,26 +13,23 @@ import (
 	"github.com/hyperledger/fabric-x-sdk/state"
 )
 
-// testVersionedDBSnapshotter adapts a *state.VersionedDB to KVSSnapshotter for tests
-// in this package. It intentionally duplicates storage.VersionedDBWrapper's small
-// adapter logic rather than importing the storage package, which itself depends on
-// execution — tests exercise the ports this package defines, not a concrete backend.
+// testVersionedDBSnapshotter is a state.Snapshotter over a *state.VersionedDB whose
+// readers expose the height they read at, so tests can check which height the
+// engine asked for.
 type testVersionedDBSnapshotter struct {
 	db *state.VersionedDB
 }
 
-func (w *testVersionedDBSnapshotter) NewSnapshot(blockNumber *uint64) (ReadStore, error) {
-	var bn uint64
-	if blockNumber == nil {
-		latest, err := w.db.BlockNumber(context.Background())
-		if err != nil {
-			return nil, err
-		}
-		bn = latest
-	} else {
-		bn = *blockNumber
+func (w *testVersionedDBSnapshotter) Snapshot(ctx context.Context) (ReadStore, error) {
+	latest, err := w.db.BlockNumber(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return &testVersionedDBReader{db: w.db, blockNumber: bn}, nil
+	return w.SnapshotAt(ctx, latest)
+}
+
+func (w *testVersionedDBSnapshotter) SnapshotAt(_ context.Context, block uint64) (ReadStore, error) {
+	return &testVersionedDBReader{db: w.db, blockNumber: block}, nil
 }
 
 type testVersionedDBReader struct {

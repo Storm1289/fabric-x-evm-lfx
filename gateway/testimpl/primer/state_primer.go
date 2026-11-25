@@ -29,11 +29,8 @@ import (
 	"github.com/hyperledger/fabric-x-sdk/endorsement"
 	efab "github.com/hyperledger/fabric-x-sdk/endorsement/fabric"
 	efabx "github.com/hyperledger/fabric-x-sdk/endorsement/fabricx"
+	"github.com/hyperledger/fabric-x-sdk/state"
 )
-
-type KVSSnapshotter interface {
-	NewSnapshot(blockNumber *uint64) (execution.ReadStore, error)
-}
 
 // StatePrimer provides a builder pattern for priming ledger state.
 // It allows setting nonces, code, balances, and storage for addresses,
@@ -41,7 +38,7 @@ type KVSSnapshotter interface {
 type StatePrimer struct {
 	gw                *core.Gateway
 	submitter         core.Submitter
-	kvs               KVSSnapshotter
+	kvs               state.Snapshotter
 	reader            execution.ReadStore
 	namespace         string
 	signer            sdk.Signer
@@ -64,7 +61,7 @@ type StatePrimer struct {
 func NewStatePrimer(
 	gw *core.Gateway,
 	submitter core.Submitter,
-	db KVSSnapshotter,
+	db state.Snapshotter,
 	namespace string,
 	signer sdk.Signer,
 	builders []endorsement.Builder,
@@ -72,7 +69,8 @@ func NewStatePrimer(
 	nsVersion string,
 	monotonicVersions bool,
 ) (*StatePrimer, error) {
-	store, err := db.NewSnapshot(nil)
+	// Create a DualStateDB with both Fabric and Ethereum state tracking
+	store, err := db.Snapshot(context.TODO())
 	if err != nil {
 		return nil, err
 	}
@@ -304,7 +302,7 @@ func (sp *StatePrimer) Writes() blocks.ReadWriteSet {
 // Reset creates a new StateDB, discarding all uncommitted changes.
 func (sp *StatePrimer) Reset() (*StatePrimer, error) {
 	sp.reader.Close() // just in case
-	reader, err := sp.kvs.NewSnapshot(nil)
+	reader, err := sp.kvs.Snapshot(context.TODO())
 	if err != nil {
 		return nil, err
 	}

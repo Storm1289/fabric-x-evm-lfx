@@ -69,8 +69,8 @@ func TestPebbleHistoryWindowReads(t *testing.T) {
 	}
 
 	// Outside it, the versions are pruned, so the read is refused.
-	if _, err := kvs.NewSnapshot(new(uint64(2))); err == nil {
-		t.Errorf("expected NewSnapshot(2) to fail: block 2 is outside the %d-block window", window)
+	if _, err := kvs.SnapshotAt(t.Context(), 2); err == nil {
+		t.Errorf("expected SnapshotAt(2) to fail: block 2 is outside the %d-block window", window)
 	}
 
 	// The latest value is always available.
@@ -130,9 +130,9 @@ func TestPebbleSnapshotIsolation(t *testing.T) {
 
 	writeBlock(t, kvs, 1)
 
-	snap, err := kvs.NewSnapshot(nil) // pinned at head, the common case
+	snap, err := kvs.Snapshot(t.Context()) // pinned at head, the common case
 	if err != nil {
-		t.Fatalf("NewSnapshot: %v", err)
+		t.Fatalf("SnapshotAt: %v", err)
 	}
 	defer snap.Close()
 
@@ -219,9 +219,9 @@ func TestPebbleFutureHeightServesTip(t *testing.T) {
 
 	writeBlock(t, kvs, 1)
 
-	snap, err := kvs.NewSnapshot(new(uint64(100))) // far past the tip
+	snap, err := kvs.SnapshotAt(t.Context(), 100) // far past the tip
 	if err != nil {
-		t.Fatalf("NewSnapshot(100): %v", err)
+		t.Fatalf("SnapshotAt(100): %v", err)
 	}
 	defer snap.Close()
 
@@ -259,8 +259,8 @@ func TestPebbleWindowBoundSurvivesLargerHistorySize(t *testing.T) {
 	}
 	defer reopened.Close()
 
-	if _, err := reopened.NewSnapshot(new(uint64(3))); err == nil {
-		t.Error("expected NewSnapshot(3) to fail: its versions were pruned under the smaller window")
+	if _, err := reopened.SnapshotAt(t.Context(), 3); err == nil {
+		t.Error("expected SnapshotAt(3) to fail: its versions were pruned under the smaller window")
 	}
 }
 
@@ -301,9 +301,9 @@ func TestPebbleSnapshotSurvivesPrune(t *testing.T) {
 
 	writeBlock(t, kvs, 1)
 
-	snap, err := kvs.NewSnapshot(nil)
+	snap, err := kvs.Snapshot(t.Context())
 	if err != nil {
-		t.Fatalf("NewSnapshot: %v", err)
+		t.Fatalf("SnapshotAt: %v", err)
 	}
 	defer snap.Close()
 
@@ -333,15 +333,15 @@ func TestPebbleLowestReaderPinHoldsHistory(t *testing.T) {
 	defer kvs.Close()
 
 	writeBlock(t, kvs, 1)
-	older, err := kvs.NewSnapshot(nil) // pinned at 1
+	older, err := kvs.Snapshot(t.Context()) // pinned at 1
 	if err != nil {
-		t.Fatalf("NewSnapshot at block 1: %v", err)
+		t.Fatalf("SnapshotAt at block 1: %v", err)
 	}
 
 	writeBlock(t, kvs, 2)
-	newer, err := kvs.NewSnapshot(nil) // pinned at 2
+	newer, err := kvs.Snapshot(t.Context()) // pinned at 2
 	if err != nil {
-		t.Fatalf("NewSnapshot at block 2: %v", err)
+		t.Fatalf("SnapshotAt at block 2: %v", err)
 	}
 
 	// Commit past the window with both open: the lower pin governs, so both keep
@@ -381,8 +381,8 @@ func TestPebbleLowestReaderPinHoldsHistory(t *testing.T) {
 	for i := uint64(15); i <= 20; i++ {
 		writeBlock(t, kvs, i)
 	}
-	if _, err := kvs.NewSnapshot(new(uint64(2))); err == nil {
-		t.Error("expected NewSnapshot(2) to fail once no reader pins it")
+	if _, err := kvs.SnapshotAt(t.Context(), 2); err == nil {
+		t.Error("expected SnapshotAt(2) to fail once no reader pins it")
 	}
 }
 
@@ -414,8 +414,8 @@ func TestPebbleOldestMarkerIsMonotonic(t *testing.T) {
 		writeBlock(t, reopened, i)
 	}
 
-	if _, err := reopened.NewSnapshot(new(uint64(3))); err == nil {
-		t.Error("expected NewSnapshot(3) to fail: block 3's versions were pruned under the smaller window")
+	if _, err := reopened.SnapshotAt(t.Context(), 3); err == nil {
+		t.Error("expected SnapshotAt(3) to fail: block 3's versions were pruned under the smaller window")
 	}
 }
 
@@ -450,13 +450,13 @@ func TestPebbleDoubleCloseKeepsOtherPin(t *testing.T) {
 
 	writeBlock(t, kvs, 1)
 
-	first, err := kvs.NewSnapshot(nil)
+	first, err := kvs.Snapshot(t.Context())
 	if err != nil {
-		t.Fatalf("NewSnapshot first: %v", err)
+		t.Fatalf("SnapshotAt first: %v", err)
 	}
-	survivor, err := kvs.NewSnapshot(nil) // same height
+	survivor, err := kvs.Snapshot(t.Context()) // same height
 	if err != nil {
-		t.Fatalf("NewSnapshot survivor: %v", err)
+		t.Fatalf("SnapshotAt survivor: %v", err)
 	}
 	defer survivor.Close()
 
@@ -508,9 +508,9 @@ func TestPebbleConcurrentReadersDuringCommits(t *testing.T) {
 				default:
 				}
 
-				snap, err := kvs.NewSnapshot(nil)
+				snap, err := kvs.Snapshot(t.Context())
 				if err != nil {
-					t.Errorf("NewSnapshot: %v", err)
+					t.Errorf("SnapshotAt: %v", err)
 					return
 				}
 				for range 5 {

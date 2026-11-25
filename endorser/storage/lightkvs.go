@@ -15,26 +15,15 @@ import (
 	"sync/atomic"
 
 	"github.com/hyperledger/fabric-lib-go/common/flogging"
-	"github.com/hyperledger/fabric-x-evm/endorser/execution"
 	"github.com/hyperledger/fabric-x-sdk/blocks"
+	"github.com/hyperledger/fabric-x-sdk/state"
 )
 
 var lkvLogger = flogging.MustGetLogger("endorser.storage.lightkvs")
 
 // KVS is a versioned world-state store: snapshot reads, block handling, and
 // lifecycle management.
-// There is one read API per question a caller can ask. Get (from
-// blocks.RecordGetter) answers "what is the current value", and NewSnapshot (from
-// execution.KVSSnapshotter) answers "what was the value at block N" — note that its
-// nil means latest while its 0 means genesis, so the two cannot be collapsed into one
-// signature.
-type KVS interface {
-	execution.KVSSnapshotter
-	blocks.BlockHandler
-	blocks.RecordGetter
-	BlockNumber(context.Context) (uint64, error)
-	Close() error
-}
+type KVS = state.KVS
 
 // LightKVS is a lightweight versioned key-value store with snapshot isolation.
 // It supports concurrent readers and a single writer.
@@ -88,7 +77,7 @@ type ValueVersion struct {
 
 // Reader provides a consistent view of the store at a specific point in time.
 // All Get operations see the state as it was when Begin() was called.
-// Reader implements the execution.ReadStore interface for compatibility with StateDB.
+// Reader implements state.Snapshot for compatibility with StateDB.
 type Reader struct {
 	// Snapshot holds a reference to the immutable snapshot
 	// This prevents the snapshot from being garbage collected
@@ -121,13 +110,23 @@ func NewLightKVS(historySize int) *LightKVS {
 	return kvs
 }
 
-// NewSnapshot starts a new read transaction and returns a Reader for the specified block number.
+// Snapshot implements state.Snapshotter.
+func (kvs *LightKVS) Snapshot(context.Context) (state.Snapshot, error) {
+	return kvs.newSnapshot(nil)
+}
+
+// SnapshotAt implements state.Snapshotter.
+func (kvs *LightKVS) SnapshotAt(_ context.Context, block uint64) (state.Snapshot, error) {
+	return kvs.newSnapshot(&block)
+}
+
+// newSnapshot starts a new read transaction and returns a Reader for the specified block number.
 // The Reader will see a consistent snapshot of the store at the requested block number.
 // nil means latest; a non-nil value is that exact height (including 0 for genesis).
-// If no matching snapshot is found, it returns an error.
+// If no matching snapshot is found, it returns state.ErrHistoryUnavailable.
 //
 // Readers must call Close() when done to allow garbage collection of old snapshots.
-func (kvs *LightKVS) NewSnapshot(blockNumber *uint64) (execution.ReadStore, error) {
+func (kvs *LightKVS) newSnapshot(blockNumber *uint64) (state.Snapshot, error) {
 	current := kvs.Current.Load()
 
 	// Latest tip.
@@ -150,13 +149,13 @@ func (kvs *LightKVS) NewSnapshot(blockNumber *uint64) (execution.ReadStore, erro
 		}
 	}
 
-	return nil, fmt.Errorf("snapshot not found for block number %d", bn)
+	return nil, fmt.Errorf("%w: block %d", state.ErrHistoryUnavailable, bn)
 }
 
 // Get implements blocks.RecordGetter, reading the latest committed state. For a read
-// at a specific block, take a NewSnapshot instead.
+// at a specific block, take a SnapshotAt instead.
 func (kvs *LightKVS) Get(namespace, key string) (*blocks.WriteRecord, error) {
-	r, err := kvs.NewSnapshot(nil)
+	r, err := kvs.newSnapshot(nil)
 	if err != nil {
 		return nil, err
 	}
@@ -166,7 +165,7 @@ func (kvs *LightKVS) Get(namespace, key string) (*blocks.WriteRecord, error) {
 }
 
 // Get retrieves the value and version for a key from the reader's snapshot.
-// This implements the execution.ReadStore interface with the signature:
+// This implements state.Snapshot with the signature:
 // Get(namespace, key string) (*blocks.WriteRecord, error)
 func (r *Reader) Get(namespace, key string) (*blocks.WriteRecord, error) {
 	if r.Snapshot == nil {

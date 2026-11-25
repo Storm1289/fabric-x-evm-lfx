@@ -84,7 +84,7 @@ type stubEngine struct {
 func (s *stubEngine) Execute(context.Context, *types.Transaction, uint64) (endorsement.ExecutionResult, error) {
 	return endorsement.ExecutionResult{}, s.execErr
 }
-func (s *stubEngine) Call(ethereum.CallMsg, *big.Int) ([]byte, uint64, error) {
+func (s *stubEngine) Call(context.Context, ethereum.CallMsg, *big.Int) ([]byte, uint64, error) {
 	return s.callPayload, s.callGas, s.callErr
 }
 func (s *stubEngine) BalanceAt(context.Context, ethcommon.Address, *big.Int) (*big.Int, error) {

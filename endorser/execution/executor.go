@@ -27,6 +27,7 @@ import (
 	fxcommon "github.com/hyperledger/fabric-x-evm/common"
 	"github.com/hyperledger/fabric-x-sdk/blocks"
 	"github.com/hyperledger/fabric-x-sdk/endorsement"
+	"github.com/hyperledger/fabric-x-sdk/state"
 )
 
 var logger = flogging.MustGetLogger("endorser.execution")
@@ -42,16 +43,6 @@ type EVMConfig struct {
 	ChargeGas bool
 }
 
-// KVSSnapshotter is the port execution uses to obtain a versioned read snapshot
-// of the world state. storage.LightKVS and storage.VersionedDBWrapper implement it.
-//
-// NewSnapshot takes an optional block height: nil means latest committed state;
-// a non-nil value means that exact height (including 0 for genesis / earliest).
-// Callers must not use 0 as a "latest" sentinel.
-type KVSSnapshotter interface {
-	NewSnapshot(blockNumber *uint64) (ReadStore, error)
-}
-
 // EVMEngine manages EVM execution and state reads for an endorser.
 // It creates isolated per-transaction snapshots for execution and reads state directly
 // for ChainStateReader calls.
@@ -60,12 +51,12 @@ type EVMEngine struct {
 	monotonicVersions bool
 
 	// kvs provides versioned storage with snapshot isolation
-	kvs       KVSSnapshotter
+	kvs       state.Snapshotter
 	evmConfig EVMConfig
 }
 
 // NewEVMEngine creates a new EVMEngine.
-func NewEVMEngine(namespace string, kvs KVSSnapshotter, evmConfig EVMConfig, monotonicVersions bool) *EVMEngine {
+func NewEVMEngine(namespace string, kvs state.Snapshotter, evmConfig EVMConfig, monotonicVersions bool) *EVMEngine {
 	return &EVMEngine{
 		namespace:         namespace,
 		kvs:               kvs,
@@ -84,7 +75,7 @@ func NewEVMEngine(namespace string, kvs KVSSnapshotter, evmConfig EVMConfig, mon
 // (non-zero); the gateway always stamps one value per ExecuteTransaction.
 func (e *EVMEngine) Execute(ctx context.Context, tx *types.Transaction, blockTime uint64) (endorsement.ExecutionResult, error) {
 	logger.Debugf("EVMEngine.Execute() called with tx=%s blockTime=%d", tx.Hash().Hex(), blockTime)
-	ex, err := e.NewTxExecutor(nil, blockTime)
+	ex, err := e.NewTxExecutor(ctx, nil, blockTime)
 	if err != nil {
 		logger.Warnf("EVMEngine.Execute() tx=%s failed to create executor: %v", tx.Hash().Hex(), err)
 		return endorsement.ExecutionResult{}, err
@@ -169,10 +160,10 @@ func NewResult(rws blocks.ReadWriteSet, logs []Log, md *endorsementpb.ExecutionM
 // every call gets "now".
 // maxUsedGas is the EVM gas the simulation needed before EIP-3529 refunds are
 // credited; 0 when the call is rejected before ApplyMessage runs.
-func (e *EVMEngine) Call(msg ethereum.CallMsg, blockNumber *big.Int) (ret []byte, maxUsedGas uint64, err error) {
+func (e *EVMEngine) Call(ctx context.Context, msg ethereum.CallMsg, blockNumber *big.Int) (ret []byte, maxUsedGas uint64, err error) {
 	logger.Debugf("EVMEngine.Call() called with to=%s blockNumber=%v", msg.To, blockNumber)
 	blockTime := uint64(time.Now().Unix())
-	ex, err := e.NewTxExecutor(blockNumber, blockTime)
+	ex, err := e.NewTxExecutor(ctx, blockNumber, blockTime)
 	if err != nil {
 		logger.Warnf("EVMEngine.Call() failed to create executor: %v", err)
 		return nil, 0, err
@@ -188,8 +179,8 @@ func (e *EVMEngine) Call(msg ethereum.CallMsg, blockNumber *big.Int) (ret []byte
 	return ret, maxUsedGas, nil
 }
 
-func (e *EVMEngine) BalanceAt(_ context.Context, account common.Address, blockNumber *big.Int) (*big.Int, error) {
-	snap, reader, err := e.newSnapshotAt(blockNumber)
+func (e *EVMEngine) BalanceAt(ctx context.Context, account common.Address, blockNumber *big.Int) (*big.Int, error) {
+	snap, reader, err := e.newSnapshotAt(ctx, blockNumber)
 	if err != nil {
 		return nil, err
 	}
@@ -197,8 +188,8 @@ func (e *EVMEngine) BalanceAt(_ context.Context, account common.Address, blockNu
 	return snap.GetBalance(account).ToBig(), nil
 }
 
-func (e *EVMEngine) StorageAt(_ context.Context, account common.Address, key common.Hash, blockNumber *big.Int) ([]byte, error) {
-	snap, reader, err := e.newSnapshotAt(blockNumber)
+func (e *EVMEngine) StorageAt(ctx context.Context, account common.Address, key common.Hash, blockNumber *big.Int) ([]byte, error) {
+	snap, reader, err := e.newSnapshotAt(ctx, blockNumber)
 	if err != nil {
 		return nil, err
 	}
@@ -206,8 +197,8 @@ func (e *EVMEngine) StorageAt(_ context.Context, account common.Address, key com
 	return snap.GetState(account, key).Bytes(), nil
 }
 
-func (e *EVMEngine) CodeAt(_ context.Context, account common.Address, blockNumber *big.Int) ([]byte, error) {
-	snap, reader, err := e.newSnapshotAt(blockNumber)
+func (e *EVMEngine) CodeAt(ctx context.Context, account common.Address, blockNumber *big.Int) ([]byte, error) {
+	snap, reader, err := e.newSnapshotAt(ctx, blockNumber)
 	if err != nil {
 		return nil, err
 	}
@@ -215,8 +206,8 @@ func (e *EVMEngine) CodeAt(_ context.Context, account common.Address, blockNumbe
 	return snap.GetCode(account), nil
 }
 
-func (e *EVMEngine) NonceAt(_ context.Context, account common.Address, blockNumber *big.Int) (uint64, error) {
-	snap, reader, err := e.newSnapshotAt(blockNumber)
+func (e *EVMEngine) NonceAt(ctx context.Context, account common.Address, blockNumber *big.Int) (uint64, error) {
+	snap, reader, err := e.newSnapshotAt(ctx, blockNumber)
 	if err != nil {
 		return 0, err
 	}
@@ -224,8 +215,8 @@ func (e *EVMEngine) NonceAt(_ context.Context, account common.Address, blockNumb
 	return snap.GetNonce(account), nil
 }
 
-// resolveStateBlockRef converts a state-query block number to the KVSSnapshotter
-// argument form. nil and any negative value (an unresolved go-ethereum block-tag
+// resolveStateBlockRef converts a state-query block number to the height
+// openSnapshot takes. nil and any negative value (an unresolved go-ethereum block-tag
 // sentinel) resolve to nil/latest rather than corrupting via *big.Int.Uint64()'s
 // absolute-value conversion. A non-negative value (including 0 for earliest) is
 // passed through as an explicit height pointer.
@@ -237,22 +228,31 @@ func resolveStateBlockRef(blockNumber *big.Int) *uint64 {
 	return &n
 }
 
+// openSnapshot opens a snapshot at ref: nil means latest, any other value that
+// height (0 is genesis).
+func (e *EVMEngine) openSnapshot(ctx context.Context, ref *uint64) (ReadStore, error) {
+	if ref == nil {
+		return e.kvs.Snapshot(ctx)
+	}
+	return e.kvs.SnapshotAt(ctx, *ref)
+}
+
 // NewTxExecutor creates a fresh executor with an isolated StateDB over this
 // engine's state. blockNumber selects the Fabric block height for the state
 // snapshot (nil = latest) and is also the EVM block number. blockTime is the
 // Unix second used for EVM block.timestamp (required, non-zero). The caller
 // closes the executor.
-func (e *EVMEngine) NewTxExecutor(blockNumber *big.Int, blockTime uint64) (*Executor, error) {
+func (e *EVMEngine) NewTxExecutor(ctx context.Context, blockNumber *big.Int, blockTime uint64) (*Executor, error) {
 	ref := resolveStateBlockRef(blockNumber)
 
 	// Begin a new reader to get snapshot isolation
-	reader, err := e.kvs.NewSnapshot(ref)
+	reader, err := e.openSnapshot(ctx, ref)
 	if err != nil {
 		return nil, err
 	}
 
 	// Create StateDB with the reader
-	stateDB, err := NewStateDB(context.TODO(), reader, e.namespace, e.monotonicVersions)
+	stateDB, err := NewStateDB(ctx, reader, e.namespace, e.monotonicVersions)
 	if err != nil {
 		reader.Close()
 		return nil, err
@@ -270,17 +270,17 @@ func (e *EVMEngine) NewTxExecutor(blockNumber *big.Int, blockTime uint64) (*Exec
 // newSnapshotAt returns an ExtendedStateDB over the state at the given Fabric block height.
 // nil blockNumber means latest; a non-negative value (including 0) is that exact height.
 // The caller must close the returned reader when done.
-func (e *EVMEngine) newSnapshotAt(blockNumber *big.Int) (ExtendedStateDB, ReadStore, error) {
+func (e *EVMEngine) newSnapshotAt(ctx context.Context, blockNumber *big.Int) (ExtendedStateDB, ReadStore, error) {
 	ref := resolveStateBlockRef(blockNumber)
 
 	// Begin a new reader to get snapshot isolation
-	reader, err := e.kvs.NewSnapshot(ref)
+	reader, err := e.openSnapshot(ctx, ref)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	// Create StateDB with the reader
-	stateDB, err := NewStateDB(context.TODO(), reader, e.namespace, e.monotonicVersions)
+	stateDB, err := NewStateDB(ctx, reader, e.namespace, e.monotonicVersions)
 	if err != nil {
 		reader.Close()
 		return nil, nil, err

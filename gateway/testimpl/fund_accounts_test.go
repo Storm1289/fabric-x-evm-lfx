@@ -31,7 +31,7 @@ func TestFundTestAccounts_SeedsBalancesReadableViaStateDB(t *testing.T) {
 		t.Fatalf("FundTestAccounts: %v", err)
 	}
 
-	reader, err := kvs.NewSnapshot(nil)
+	reader, err := kvs.Snapshot(t.Context())
 	if err != nil {
 		t.Fatalf("NewSnapshot: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestFundTestAccounts_DefaultAccounts(t *testing.T) {
 		t.Fatalf("FundTestAccounts: %v", err)
 	}
 
-	reader, err := kvs.NewSnapshot(nil)
+	reader, err := kvs.Snapshot(t.Context())
 	if err != nil {
 		t.Fatalf("NewSnapshot: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestFundTestAccounts_SurvivesLaterUpdate(t *testing.T) {
 		t.Fatalf("Handle: %v", err)
 	}
 
-	reader, err := kvs.NewSnapshot(nil)
+	reader, err := kvs.Snapshot(t.Context())
 	if err != nil {
 		t.Fatalf("NewSnapshot: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestFundTestAccounts_UsesHandleVersions(t *testing.T) {
 	if err := FundTestAccounts(t.Context(), kvs, testNS, []common.Address{addr}, half); err != nil {
 		t.Fatalf("first fund: %v", err)
 	}
-	reader, err := kvs.NewSnapshot(nil)
+	reader, err := kvs.Snapshot(t.Context())
 	if err != nil {
 		t.Fatalf("NewSnapshot: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestFundTestAccounts_UsesHandleVersions(t *testing.T) {
 	if err := FundTestAccounts(t.Context(), kvs, testNS, []common.Address{addr}, half); err != nil {
 		t.Fatalf("second fund: %v", err)
 	}
-	reader, err = kvs.NewSnapshot(nil)
+	reader, err = kvs.Snapshot(t.Context())
 	if err != nil {
 		t.Fatalf("NewSnapshot: %v", err)
 	}

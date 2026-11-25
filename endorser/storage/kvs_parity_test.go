@@ -79,7 +79,7 @@ func kvsBackends() []kvsBackend {
 				if err != nil {
 					t.Fatalf("NewWriteDB(%q): %v", loc, err)
 				}
-				return NewVersionedDBWrapper(db)
+				return db
 			},
 			persistent: true,
 		},
@@ -188,9 +188,9 @@ func mustGet(t *testing.T, kvs KVS, ns, key string) *blocks.WriteRecord {
 // where block 0 names genesis rather than latest.
 func mustGetAsOf(t *testing.T, kvs KVS, ns, key string, block uint64) *blocks.WriteRecord {
 	t.Helper()
-	snap, err := kvs.NewSnapshot(&block)
+	snap, err := kvs.SnapshotAt(t.Context(), block)
 	if err != nil {
-		t.Fatalf("NewSnapshot at %d: %v", block, err)
+		t.Fatalf("SnapshotAt at %d: %v", block, err)
 	}
 	defer snap.Close()
 
@@ -362,9 +362,9 @@ func TestParityTimeTravelReads(t *testing.T) {
 		}
 
 		// A snapshot pins its block: writes after it are invisible.
-		snap, err := kvs.NewSnapshot(new(uint64(2)))
+		snap, err := kvs.SnapshotAt(t.Context(), 2)
 		if err != nil {
-			t.Fatalf("NewSnapshot(2): %v", err)
+			t.Fatalf("SnapshotAt(2): %v", err)
 		}
 		defer snap.Close()
 		rec, err := snap.Get("ns1", "k")
@@ -401,13 +401,13 @@ func TestParityEvictedHistoryErrors(t *testing.T) {
 
 		// ...and anything below it is gone, not silently answered.
 		for _, evicted := range []uint64{1, head - window - 1} {
-			snap, err := kvs.NewSnapshot(&evicted)
+			snap, err := kvs.SnapshotAt(t.Context(), evicted)
 			if err != nil {
 				continue // the expected outcome
 			}
 			rec, getErr := snap.Get("ns1", "k")
 			snap.Close()
-			t.Errorf("NewSnapshot(%d) succeeded for an evicted block: got record %+v (Get err %v)",
+			t.Errorf("SnapshotAt(%d) succeeded for an evicted block: got record %+v (Get err %v)",
 				evicted, rec, getErr)
 		}
 	})

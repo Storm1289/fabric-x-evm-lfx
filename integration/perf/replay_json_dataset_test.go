@@ -42,6 +42,7 @@ import (
 	sdk "github.com/hyperledger/fabric-x-sdk"
 	"github.com/hyperledger/fabric-x-sdk/blocks"
 	"github.com/hyperledger/fabric-x-sdk/network"
+	"github.com/hyperledger/fabric-x-sdk/state/queryservice"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc/grpclog"
 )
@@ -355,7 +356,7 @@ func balancePrimingEndorserFactory(balancePriming *testimpl.BalancePrimingConfig
 			}
 		case *estorage.RevertibleLightKVS:
 			t.Fatalf("perf endorser got the testImpl RevertibleLightKVS; NewEndorserCore must be called with testImpl=false")
-		case estorage.QueryServiceKVS:
+		case *queryservice.Store:
 			if *endorserDB != econf.DBQueryService {
 				t.Fatalf("perf endorser got the query-service store, but -db is %q", *endorserDB)
 			}

@@ -99,9 +99,8 @@ func allBackends() []benchBackend {
 					b.Skipf("sqlite unavailable (likely missing cgo): %v", err)
 					return nil
 				}
-				kvs := storage.NewVersionedDBWrapper(db)
-				b.Cleanup(func() { _ = kvs.Close() })
-				return kvs
+				b.Cleanup(func() { _ = db.Close() })
+				return db
 			},
 		},
 	}
@@ -373,7 +372,7 @@ func BenchmarkGetState(b *testing.B) {
 
 // BenchmarkSimulation benchmarks snapshot-based reads — the hot path for
 // transaction endorsement. Each b.N iteration models one transaction: create a
-// snapshot via NewSnapshot, perform readsPerSim Get calls, and close the reader.
+// snapshot via SnapshotAt, perform readsPerSim Get calls, and close the reader.
 //
 // Note: The SDK's SimulationStore also performs 5 PutState writes per simulation,
 // but the KVS interface applies writes at block granularity via Handle, not
@@ -406,7 +405,7 @@ func BenchmarkSimulation(b *testing.B) {
 					b.ResetTimer()
 					b.ReportAllocs()
 					for range b.N {
-						reader, err := kvs.NewSnapshot(new(preloadLastBlock))
+						reader, err := kvs.SnapshotAt(b.Context(), preloadLastBlock)
 						if err != nil {
 							b.Fatal(err)
 						}
@@ -506,7 +505,7 @@ func BenchmarkMixed(b *testing.B) {
 				b.ResetTimer()
 				for range b.N {
 					n := lastBlock.Load()
-					reader, err := kvs.NewSnapshot(new(n))
+					reader, err := kvs.SnapshotAt(b.Context(), n)
 					if err != nil {
 						b.Fatal(err)
 					}

@@ -38,7 +38,7 @@ func TestNewExecutor_WrapsStateDBWhenDebugEnabled(t *testing.T) {
 	}
 	eng := NewEVMEngine(Namespace, kvs, cfg, false)
 
-	ex, err := eng.NewTxExecutor(nil, uint64(1_700_000_000))
+	ex, err := eng.NewTxExecutor(t.Context(), nil, uint64(1_700_000_000))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestExecute_MaxTxGas(t *testing.T) {
 			MaxTxGas:    maxTxGas,
 		}
 		eng := NewEVMEngine(Namespace, kvs, cfg, false)
-		ex, err := eng.NewTxExecutor(nil, uint64(1_700_000_000))
+		ex, err := eng.NewTxExecutor(t.Context(), nil, uint64(1_700_000_000))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -108,7 +108,7 @@ func TestExecute_MaxTxGas(t *testing.T) {
 	}
 }
 
-// TestResolveStateBlockRef maps big.Int heights onto NewSnapshot args.
+// TestResolveStateBlockRef maps big.Int heights onto openSnapshot args.
 func TestResolveStateBlockRef(t *testing.T) {
 	if got := resolveStateBlockRef(nil); got != nil {
 		t.Fatalf("nil -> %v, want nil (latest)", got)
@@ -137,7 +137,7 @@ func TestNewSnapshotAt_ZeroIsExplicitGenesis(t *testing.T) {
 	cfg := EVMConfig{ChainConfig: common.BuildChainConfig(4011)}
 	eng := NewEVMEngine(Namespace, kvs, cfg, false)
 
-	_, reader, err := eng.newSnapshotAt(big.NewInt(0))
+	_, reader, err := eng.newSnapshotAt(t.Context(), big.NewInt(0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestNewSnapshotAt_NegativeBlockNumberResolvesToLatest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, reader, err := eng.newSnapshotAt(big.NewInt(-5))
+	_, reader, err := eng.newSnapshotAt(t.Context(), big.NewInt(-5))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,7 @@ func TestNewExecutor_NegativeBlockNumberResolvesToLatest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ex, err := eng.NewTxExecutor(big.NewInt(-5), uint64(1_700_000_000))
+	ex, err := eng.NewTxExecutor(t.Context(), big.NewInt(-5), uint64(1_700_000_000))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestNewExecutor_NegativeBlockNumberResolvesToLatest(t *testing.T) {
 func TestCall_ReportsPreRefundGasNotPostRefund(t *testing.T) {
 	eng, contract := newClearingContractEngine(t, "exec_refund")
 
-	ex, err := eng.NewTxExecutor(nil, uint64(1_700_000_000))
+	ex, err := eng.NewTxExecutor(t.Context(), nil, uint64(1_700_000_000))
 	if err != nil {
 		t.Fatal(err)
 	}

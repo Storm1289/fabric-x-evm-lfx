@@ -65,7 +65,7 @@ func NewEndorserCore(
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("failed to initialize store: %w", err)
 		}
-		kvs = storage.NewVersionedDBWrapper(writeDB)
+		kvs = writeDB
 	case config.DBMemory:
 		baseLightKVS := storage.NewLightKVS(dbCfg.HistorySize)
 		if testImpl {
@@ -84,7 +84,7 @@ func NewEndorserCore(
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("failed to connect to query service: %w", err)
 		}
-		kvs = storage.NewQueryServiceKVS(client)
+		kvs = queryservice.NewStore(client)
 	default:
 		return nil, nil, nil, fmt.Errorf("invalid endorser database type %q, must be one of %q, %q, %q, %q", dbCfg.Database, config.DBSQLite, config.DBMemory, config.DBPebble, config.DBQueryService)
 	}
