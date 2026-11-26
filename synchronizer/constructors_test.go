@@ -59,7 +59,7 @@ func TestNew_RoutesByProtocol(t *testing.T) {
 	}
 }
 
-// NewDelivery is delivery-only so empty blocks reach the handlers.
+// NewDelivery is delivery-only because only delivery can follow a ledger rewound by evm_revert.
 func TestNewDelivery_NeverReturnsHybrid(t *testing.T) {
 	for _, protocol := range []string{common.ProtocolFabricX, "", common.ProtocolFabric} {
 		t.Run("protocol "+protocol, func(t *testing.T) {
