@@ -7,6 +7,7 @@ SPDX-License-Identifier: LGPL-3.0-or-later
 package execution
 
 import (
+	"context"
 	"errors"
 	"math/big"
 	"testing"
@@ -71,7 +72,10 @@ func TestEVMEngineExecute_WrongChainSignatureIsRejected(t *testing.T) {
 
 type failingSnapshotter struct{ err error }
 
-func (f failingSnapshotter) NewSnapshot(*uint64) (ReadStore, error) { return nil, f.err }
+func (f failingSnapshotter) Snapshot(context.Context) (ReadStore, error) { return nil, f.err }
+func (f failingSnapshotter) SnapshotAt(context.Context, uint64) (ReadStore, error) {
+	return nil, f.err
+}
 
 // A state snapshot that cannot be opened fails the call with that error, not as a rejection.
 func TestEVMEngineExecute_SnapshotFailureIsReturned(t *testing.T) {
