@@ -126,11 +126,22 @@ func requireReady(t *testing.T, q *DepGraphQueue, want int) {
 }
 
 // blockWith builds a committed block carrying the given transactions.
+//
+// Every transaction gets a Fabric tx id, because a real block always carries one
+// and DepGraphQueue.Handle treats an empty one as a broken block path. The value
+// stands for "whatever attempt the committer reported", distinct per transaction
+// and deliberately unlike an Ethereum hash so the two cannot be confused; a test
+// that cares which attempt a conflict belongs to sets it explicitly instead (see
+// mvccConflictBlockForAttempt).
 func blockWith(status uint8, txs ...*types.Transaction) *domain.Block {
 	b := &domain.Block{}
 	for _, tx := range txs {
 		h := tx.Hash()
-		b.Transactions = append(b.Transactions, domain.Transaction{TxHash: h.Bytes(), Status: status})
+		b.Transactions = append(b.Transactions, domain.Transaction{
+			TxHash:     h.Bytes(),
+			Status:     status,
+			FabricTxID: "committed-attempt-for-" + h.Hex(),
+		})
 	}
 	return b
 }
@@ -1585,4 +1596,149 @@ func TestDepGraphQueue_ConflictForStartedResubmissionSchedulesNothing(t *testing
 	require.Equal(t, a.Hash(), dequeueHash(t, q))
 	require.Never(t, func() bool { return readyCount(q) > 0 }, 200*time.Millisecond, 10*time.Millisecond,
 		"it must not be offered a second time")
+}
+
+// mvccConflictBlockForAttempt is mvccConflictBlock stamped with the Fabric tx id
+// of the attempt that produced the conflict, which is what a committed block
+// carries: the committer reports on the envelope it ordered, not on the Ethereum
+// transaction in the abstract.
+func mvccConflictBlockForAttempt(id string, txs ...*types.Transaction) *domain.Block {
+	b := mvccConflictBlock(txs...)
+	for i := range b.Transactions {
+		b.Transactions[i].FabricTxID = id
+	}
+	return b
+}
+
+// Both attempts have been submitted, so nothing about the entry's position in the
+// pipeline tells them apart -- not the node, not whether a worker has taken it.
+// Only the attempt id does. The conflict belongs to the attempt Complete
+// abandoned, so the live one must not be scheduled a second time.
+func TestDepGraphQueue_ConflictFromAnAbandonedAttemptSchedulesNothing(t *testing.T) {
+	q, _ := newDepQueue(t)
+	a := txWithNonce(1)
+
+	// First attempt: dequeued and submitted, then the submit fails ambiguously and
+	// Complete untracks it -- while an orderer is holding the envelope after all.
+	require.NoError(t, q.Enqueue(a))
+	requireReady(t, q, 1)
+	require.Equal(t, a.Hash(), dequeueHash(t, q))
+	q.RecordAttempt(a.Hash(), "attempt-1")
+	q.Complete(a.Hash())
+
+	// The wallet resends it, and the fresh entry is dequeued and submitted in turn.
+	require.Eventually(t, func() bool { return q.Enqueue(a) == nil }, 2*time.Second, 10*time.Millisecond)
+	requireReady(t, q, 1)
+	require.Equal(t, a.Hash(), dequeueHash(t, q))
+	q.RecordAttempt(a.Hash(), "attempt-2")
+
+	require.NoError(t, q.Handle(context.Background(), mvccConflictBlockForAttempt("attempt-1", a)))
+
+	require.NotNil(t, q.IsPending(a.Hash()), "the live attempt keeps its entry")
+	require.Never(t, func() bool { return readyCount(q) > 0 }, 200*time.Millisecond, 10*time.Millisecond,
+		"a conflict from an abandoned attempt must not reschedule the live one")
+}
+
+// The counterpart, so the gate cannot pass by refusing everything: a conflict
+// carrying the id of the attempt this entry really submitted is its own, and is
+// retried exactly as before.
+func TestDepGraphQueue_ConflictFromTheSubmittedAttemptIsRetried(t *testing.T) {
+	q, _ := newDepQueue(t)
+	a := txWithNonce(1)
+
+	require.NoError(t, q.Enqueue(a))
+	requireReady(t, q, 1)
+	require.Equal(t, a.Hash(), dequeueHash(t, q))
+	q.RecordAttempt(a.Hash(), "attempt-1")
+
+	require.NoError(t, q.Handle(context.Background(), mvccConflictBlockForAttempt("attempt-1", a)))
+	requireReady(t, q, 1)
+	require.Equal(t, a.Hash(), dequeueHash(t, q))
+}
+
+// A block that names no attempt for a transaction cannot have come from either
+// delivery path, so it means something upstream is broken rather than that a
+// transaction went badly. A debug build stops on it whatever the transaction's
+// outcome was, and whether or not the queue has an attempt to compare against; a
+// release build carries on as it did before attribution existed.
+func TestDepGraphQueue_BlockWithoutAnAttemptIDIsFatalInDebug(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		block func(*types.Transaction) *domain.Block
+	}{
+		{name: "conflicted", block: func(tx *types.Transaction) *domain.Block { return mvccConflictBlock(tx) }},
+		{name: "committed", block: func(tx *types.Transaction) *domain.Block { return fabricCommittedBlock(tx) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			q, _ := newDepQueue(t)
+			a := txWithNonce(1)
+			require.NoError(t, q.Enqueue(a))
+			requireReady(t, q, 1)
+			require.Equal(t, a.Hash(), dequeueHash(t, q))
+
+			blk := tc.block(a)
+			blk.Transactions[0].FabricTxID = ""
+
+			handle := func() { _ = q.Handle(context.Background(), blk) }
+			if fxcommon.DebugBuild {
+				require.Panics(t, handle, "a debug build stops on a block that names no attempt")
+				return
+			}
+			require.NotPanics(t, handle)
+		})
+	}
+}
+
+// retry forgets the identity of the attempt that conflicted, so the same block
+// arriving twice cannot earn the transaction a second retry. Orderer.Broadcast can
+// resend an envelope after a failed Send, so a redelivery is not hypothetical.
+func TestDepGraphQueue_RedeliveredConflictAfterARetrySchedulesNothing(t *testing.T) {
+	q, _ := newDepQueue(t)
+	a := txWithNonce(1)
+
+	require.NoError(t, q.Enqueue(a))
+	requireReady(t, q, 1)
+	require.Equal(t, a.Hash(), dequeueHash(t, q))
+	q.RecordAttempt(a.Hash(), "attempt-1")
+
+	blk := mvccConflictBlockForAttempt("attempt-1", a)
+	require.NoError(t, q.Handle(context.Background(), blk))
+	requireReady(t, q, 1) // retried once, and the budget would allow another
+
+	// The very same block again. The attempt it names is finished and forgotten,
+	// so there is nothing for it to be attributed to.
+	require.NoError(t, q.Handle(context.Background(), blk))
+	require.Never(t, func() bool { return readyCount(q) > 1 }, 200*time.Millisecond, 10*time.Millisecond,
+		"a redelivered conflict must not schedule a second copy")
+}
+
+// An attempt handed to the submitter always has an id, because the endorsement it
+// was built from always carries a proposal. Recording nothing would leave the
+// entry looking as though it had submitted nothing, so a debug build stops.
+func TestDepGraphQueue_RecordingAnUnnamedAttemptIsFatalInDebug(t *testing.T) {
+	q, _ := newDepQueue(t)
+	a := txWithNonce(1)
+	require.NoError(t, q.Enqueue(a))
+
+	record := func() { q.RecordAttempt(a.Hash(), "") }
+	if fxcommon.DebugBuild {
+		require.Panics(t, record, "a debug build stops on an attempt with no id")
+		return
+	}
+	require.NotPanics(t, record)
+}
+
+// The same invariant asserted at the point of use: a conflict with no attempt id
+// cannot be attributed, so staleConflict stops rather than guessing. Handle
+// normally stops first, which is why this exercises the predicate directly.
+func TestDepGraphQueue_AttributingAnUnnamedConflictIsFatalInDebug(t *testing.T) {
+	entry := &trackedTx{tx: txWithNonce(1), attemptID: "attempt-1", dequeued: true}
+
+	attribute := func() { _ = entry.staleConflict("") }
+	if fxcommon.DebugBuild {
+		require.Panics(t, attribute, "a debug build stops on a conflict that names no attempt")
+		return
+	}
+	require.NotPanics(t, attribute)
+	require.False(t, entry.staleConflict(""), "a release build falls back to pre-attribution behaviour")
 }

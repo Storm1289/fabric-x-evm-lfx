@@ -20,6 +20,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/hyperledger/fabric-lib-go/common/flogging"
+	"github.com/hyperledger/fabric-x-common/protoutil"
 	cmn "github.com/hyperledger/fabric-x-evm/common"
 	"github.com/hyperledger/fabric-x-evm/gateway/domain"
 	"github.com/hyperledger/fabric-x-evm/gateway/metrics"
@@ -74,6 +75,14 @@ type TxQueueInterface interface {
 // processTx a second execution.
 type endorsementReuser interface {
 	ReusableEndorsement(txHash common.Hash) (sdk.Endorsement, bool)
+}
+
+// attemptTracker is a queue that needs to know which attempt of a transaction it
+// put on the wire, so that it can tell whose outcome a committed block reports.
+// Only DepGraphQueue needs this: it is the only queue that can submit more than
+// one attempt of the same transaction over that transaction's life.
+type attemptTracker interface {
+	RecordAttempt(txHash common.Hash, fabricTxID string)
 }
 
 var logger = flogging.MustGetLogger("gateway.core")
@@ -188,6 +197,7 @@ func (g *Gateway) worker(ctx context.Context) {
 func (g *Gateway) processTx(ctx context.Context, tx *types.Transaction) error {
 	if r, ok := g.TxQueue.(endorsementReuser); ok {
 		if end, ok := r.ReusableEndorsement(tx.Hash()); ok {
+			g.recordAttempt(tx.Hash(), end)
 			return g.SubmitFabricTx(ctx, tx.Hash(), end)
 		}
 	}
@@ -203,6 +213,7 @@ func (g *Gateway) processTx(ctx context.Context, tx *types.Transaction) error {
 	// STEP 13: the tx is submitted for ordering; measure the hand-off latency and
 	// report how many endorsed transactions are queued in the endorsementChan.
 	t13 := time.Now()
+	g.recordAttempt(tx.Hash(), end)
 	if err := g.SubmitFabricTx(ctx, tx.Hash(), end); err != nil {
 		return err
 	}
@@ -258,6 +269,76 @@ func (g *Gateway) EstimateGas(ctx context.Context, call ethereum.CallMsg, blockN
 // ExecuteEthTx requests endorsements for the submitted ethereum-style transaction.
 func (g *Gateway) ExecuteEthTx(ctx context.Context, tx *types.Transaction) (sdk.Endorsement, error) {
 	return g.endorsers.ExecuteTransaction(ctx, tx)
+}
+
+// recordAttempt tells the queue which attempt is about to be submitted, so that
+// it can attribute that attempt's outcome when a block reports on it. Called
+// immediately before every SubmitFabricTx on the worker path, so the record is
+// never later than the envelope it names.
+//
+// The id is read off the endorsement rather than carried down from where it was
+// minted. That costs one header unmarshal, which is a fraction of a percent of
+// the endorse-and-broadcast step it sits in, and it keeps this to a single
+// mechanism that works the same whether the endorsement was reused or freshly
+// made. If the allocation ever shows up in a profile, Endorse can hand the id
+// out directly without the queue side changing at all.
+//
+// A queue that does not track attempts records nothing. Anything else -- an
+// endorsement without a proposal, a proposal whose header will not parse, a header
+// naming no transaction -- stops a debug build in fabricTxID, because every one of
+// those means the attempt about to be submitted has no name and its outcome could
+// never be attributed.
+func (g *Gateway) recordAttempt(hash common.Hash, end sdk.Endorsement) {
+	tr, ok := g.TxQueue.(attemptTracker)
+	if !ok {
+		return
+	}
+	tr.RecordAttempt(hash, fabricTxID(hash, end))
+}
+
+// fabricTxID is the Fabric transaction id sealed into the endorsement's proposal,
+// which is the name the committed block will report this attempt under.
+//
+// All three failures below stop a debug build rather than being worked around,
+// and they are the same failure seen from three angles: the attempt about to be
+// submitted has no name, so nothing could ever attribute its outcome. This
+// proposal was built by our own endorsement client, out of a header we marshalled
+// ourselves, from an invocation whose id the builder derives from a fresh random
+// nonce -- so a header that will not parse means the endorsement is corrupt or
+// something that is not a Fabric-X proposal was routed here, and a header that
+// parses but names nothing means the proposal was built without an id. Neither
+// improves by submitting it and watching.
+//
+// Note that an absent proposal lands in the third branch rather than the first:
+// empty bytes unmarshal cleanly to an empty message, so it is the missing id and
+// not a parse error that catches it.
+//
+// A release build logs and returns an empty id, which degrades to the behaviour
+// that predates attribution rather than to anything worse.
+func fabricTxID(hash common.Hash, end sdk.Endorsement) string {
+	hdr, err := protoutil.UnmarshalHeader(end.Proposal.GetHeader())
+	if err != nil {
+		msg := fmt.Sprintf("Gateway.fabricTxID() tx %s: proposal header will not parse: %v", hash.Hex(), err)
+		logger.Error(msg)
+		cmn.DebugPanic(msg)
+		return ""
+	}
+	chdr, err := protoutil.UnmarshalChannelHeader(hdr.ChannelHeader)
+	if err != nil {
+		msg := fmt.Sprintf("Gateway.fabricTxID() tx %s: channel header will not parse: %v", hash.Hex(), err)
+		logger.Error(msg)
+		cmn.DebugPanic(msg)
+		return ""
+	}
+	if chdr.TxId == "" {
+		msg := fmt.Sprintf(
+			"Gateway.fabricTxID() tx %s: the proposal names no Fabric tx id, so the envelope built "+
+				"from it could not be identified in a committed block", hash.Hex())
+		logger.Error(msg)
+		cmn.DebugPanic(msg)
+		return ""
+	}
+	return chdr.TxId
 }
 
 // SubmitFabricTx submits a Fabric envelope via the BatchSubmitter. hash is the originating

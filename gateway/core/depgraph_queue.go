@@ -159,6 +159,19 @@ type trackedTx struct {
 	reads    []string
 	writes   []string
 
+	// attemptID is the Fabric tx id of the attempt this entry last handed to the
+	// batch submitter, empty if it has handed over none. It is what makes a
+	// conflict attributable: a committed block names the attempt that produced
+	// it, and only that attempt's outcome is this entry's to act on.
+	//
+	// dequeued says a worker has taken the current attempt. It carries no
+	// decision of its own: it only distinguishes an entry that has submitted
+	// nothing because nothing has started it from one whose attempt is being
+	// endorsed right now, and staleConflict abstains on the second rather than
+	// judging a conflict it cannot yet attribute.
+	attemptID string
+	dequeued  bool
+
 	// retries counts the MVCC conflicts this transaction has been re-executed
 	// for. It survives because the tracked entry does: a retried transaction is
 	// never untracked, which also keeps IsPending answering across attempts.
@@ -168,6 +181,54 @@ type trackedTx struct {
 	// conflicted attempt already went through ObserveTxComplete, which deletes
 	// the timestamps, so without this a retry records no latency at all.
 	restartMetrics bool
+}
+
+// staleConflict reports whether a conflict stamped with blockTxID demonstrably
+// belongs to some attempt other than this entry's own, so that acting on it would
+// schedule a transaction that is already scheduled.
+//
+// It only ever answers true when it can prove the mismatch, because the two
+// errors are not symmetric. A conflict wrongly treated as ours costs a duplicate
+// attempt: wasteful, loud, and self-limiting. A conflict wrongly treated as
+// somebody else's leaves the entry pending forever while it holds the graph node
+// that gates every transaction queued behind its keys -- a silent stall of a
+// whole dependency chain. So every uncertain case falls through to the behaviour
+// that existed before this check, and only certainty skips.
+func (t *trackedTx) staleConflict(blockTxID string) bool {
+	if t.attemptID == "" {
+		if t.dequeued {
+			// A worker holds this attempt but has not submitted it yet: it is
+			// being endorsed, or waiting on the endorsement channel. We cannot
+			// attribute the conflict, so behave as this branch did before the
+			// check existed. Also the state a queue driven without a gateway is
+			// permanently in, which is why it is not an alarm.
+			depGraphLogger.Debugf(
+				"DepGraphQueue.staleConflict() tx %s has no submitted attempt to compare against",
+				t.tx.Hash().Hex())
+			return false
+		}
+		// Nothing has even started this entry's attempt, so no committed block
+		// can be reporting on it.
+		return true
+	}
+	if blockTxID == "" {
+		// Unreachable in a debug build, where Handle has already stopped on a block
+		// that names no attempt. Not removable for that reason, though: DebugPanic
+		// is a no-op under -tags release, so a release build reaches here, and
+		// without this branch the comparison below would read "" as a mismatch and
+		// call the conflict somebody else's. That parks the entry forever holding
+		// the node its dependents are queued behind -- a silent stall rather than
+		// the wasted retry this returns. The branch is the release-mode fallback,
+		// not a second guard.
+		msg := fmt.Sprintf(
+			"DepGraphQueue.staleConflict() tx %s: the conflict names no attempt, so it cannot be "+
+				"attributed to one", t.tx.Hash().Hex())
+		depGraphLogger.Error(msg)
+		fc.DebugPanic(msg)
+		// Release build: fall back to the behaviour that predates attribution.
+		return false
+	}
+	return blockTxID != t.attemptID
 }
 
 // DepGraphQueue is a TxQueueInterface backed by the committer's dependency
@@ -562,6 +623,34 @@ func (q *DepGraphQueue) startForests(forests []dependencygraph.TxNodeBatch) (orp
 				orphans = append(orphans, node)
 				continue
 			}
+			// This and retry are the only two ways onto the ready list, and retry
+			// clears the finished attempt's identity itself, so anything started here
+			// is starting for the first time -- fresh from Enqueue or adopt, or a
+			// forest member parked behind a sibling -- and carries no attempt state.
+			// Finding some means the manager has released one entry twice, or a
+			// retried transaction re-entered it.
+			//
+			// Starting it anyway is the one thing that must not happen: attempt state
+			// says this transaction has been on the ready list before and is most
+			// likely in flight now, so a second copy is exactly the duplicate
+			// attribution exists to prevent. The node goes back instead, the way an
+			// untracked one does, which is what frees the dependents. The entry is
+			// left without a node, so a later conflict for it reaches the
+			// MVCC-UNSTARTED case in untrackOrRetry and schedules nothing, and a
+			// later commit untracks it with nothing left to hand back. Its attempt
+			// state is left alone rather than cleared: nothing reads it again, and it
+			// is the only evidence of what happened.
+			if t.attemptID != "" || t.dequeued {
+				msg := fmt.Sprintf(
+					"DepGraphQueue.startForests() tx %s is being started with attempt state already "+
+						"on it (attemptID=%q dequeued=%v), so it has been on the ready list before; "+
+						"its node is being handed back rather than started a second time",
+					hash.Hex(), t.attemptID, t.dequeued)
+				depGraphLogger.Error(msg)
+				unexpected = append(unexpected, msg)
+				orphans = append(orphans, node)
+				continue
+			}
 			// STEP 9: stamp when the dep manager released this tx.
 			t.node, t.readyAt, t.next = node, readyAt, forest[i+1:]
 			q.ready = append(q.ready, t.tx)
@@ -612,6 +701,9 @@ func (q *DepGraphQueue) Dequeue() (*types.Transaction, bool) {
 	// STEP 10 (DepGraphQueue): measure how long the tx waited in the ready list
 	// after the dep manager released it (STEP 9→10), and report ready-list depth.
 	if t, ok := q.tracked[tx.Hash()]; ok {
+		// A worker now owns this attempt, which is what makes a conflict for it
+		// plausible. See staleConflict.
+		t.dequeued = true
 		if !t.readyAt.IsZero() {
 			metrics.Default().ObserveStep(metrics.StepDepgraphPostRelease, time.Since(t.readyAt))
 		}
@@ -624,6 +716,38 @@ func (q *DepGraphQueue) Dequeue() (*types.Transaction, bool) {
 
 	depGraphLogger.Debugf("DepGraphQueue.Dequeue() returning tx %s", tx.Hash().Hex())
 	return tx, true
+}
+
+// RecordAttempt notes the Fabric tx id of the attempt just handed to the batch
+// submitter, which is what lets a later conflict be attributed to it. Gateway.submit
+// calls it immediately before submitting, so the record is never later than the
+// envelope it names.
+//
+// An untracked hash is normal and ignored: the state-priming RPCs submit without
+// ever enqueueing, and a transaction can be completed while its endorsement is
+// still in the submitter's channel.
+func (q *DepGraphQueue) RecordAttempt(hash common.Hash, fabricTxID string) {
+	if fabricTxID == "" {
+		// Unreachable in a debug build, where Gateway.fabricTxID has already stopped
+		// on an attempt with no id. Kept as a precondition on an exported method
+		// rather than for its effect: removing it would change nothing, since
+		// writing "" is the same as not writing at all, so this is the assertion and
+		// not the handling. What it buys is that the queue states its own contract
+		// -- an attempt has a name -- independently of the one caller that currently
+		// honours it, and that a caller arriving by some other route than
+		// Gateway.submit cannot silently switch attribution off for an entry.
+		msg := fmt.Sprintf(
+			"DepGraphQueue.RecordAttempt() tx %s: the attempt being submitted has no Fabric tx id",
+			hash.Hex())
+		depGraphLogger.Error(msg)
+		fc.DebugPanic(msg)
+		return
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if t, ok := q.tracked[hash]; ok {
+		t.attemptID = fabricTxID
+	}
 }
 
 // IsPending reports a transaction the queue still tracks.
@@ -735,6 +859,24 @@ func (q *DepGraphQueue) Handle(_ context.Context, block *domain.Block) error {
 
 	outcomes := make([]txOutcome, 0, len(block.Transactions))
 	for _, tx := range block.Transactions {
+		// Every committed transaction names the attempt that produced it, on both
+		// paths a block can arrive by: the delivery parser reads the id out of the
+		// envelope's channel header, and the notification stream out of the
+		// committer's own transaction reference. So an empty one is never a
+		// transaction that went badly -- it means a block path is broken, or a
+		// block was synthesized without one -- and attribution has nothing to work
+		// with. Asserted for every transaction rather than only for conflicts, so
+		// a broken path is caught on the first block instead of the first conflict,
+		// and here rather than inside the lock below.
+		if tx.FabricTxID == "" {
+			msg := fmt.Sprintf(
+				"DepGraphQueue.Handle() tx %s in block %d carries no Fabric tx id, so no conflict "+
+					"for it could be attributed to an attempt",
+				common.BytesToHash(tx.TxHash).Hex(), block.BlockNumber)
+			depGraphLogger.Error(msg)
+			fc.DebugPanic(msg)
+		}
+
 		// Counts attempts, not transactions: a retried one is counted again when
 		// its next attempt commits. Stats is a benchmarking aid (see its TODO),
 		// and an attempt is the thing the committer actually saw.
@@ -749,6 +891,7 @@ func (q *DepGraphQueue) Handle(_ context.Context, block *domain.Block) error {
 			conflicted: tx.FabricTxStatus == blocks.StatusMVCCConflict,
 			tx:         tx.ToEthTx(),
 			from:       common.BytesToAddress(tx.FromAddress),
+			fabricTxID: tx.FabricTxID,
 		})
 	}
 
@@ -771,6 +914,10 @@ type txOutcome struct {
 	conflicted bool
 	tx         *types.Transaction
 	from       common.Address
+	// fabricTxID names the attempt that produced this outcome. Both block paths
+	// populate it: delivery reads it from the envelope's channel header, and
+	// notification from the committer's own tx reference.
+	fabricTxID string
 }
 
 // untrackOrRetry resolves every transaction in a committed block: each is either
@@ -844,6 +991,27 @@ func (q *DepGraphQueue) untrackOrRetry(
 					"so an attempt for it is already in flight and no further one is scheduled; "+
 					"most likely its earlier attempt was still unresolved when the client resubmitted it",
 				o.hash.Hex(), blockNum)
+		case q.tracked[o.hash].staleConflict(o.fabricTxID):
+			// Conflicted and tracked with a node, but the conflict is the outcome
+			// of an attempt other than the one this entry put on the wire, so it
+			// is not this entry's to act on and nothing is scheduled.
+			//
+			// The entry survives an ambiguous submit failure badly: Complete
+			// untracks it and hands its node back, which also drops the graph's
+			// protection on its keys, and the client then resubmits and gets a
+			// fresh entry. The old attempt, which one orderer took after all, can
+			// then conflict against a writer that protection would have excluded.
+			// Retrying here would append a second copy of a transaction already on
+			// the ready list, and charge this entry's budget for a conflict it did
+			// not cause.
+			pending = true
+			depGraphLogger.Warnf(
+				"[MVCC-STALE] tx %s conflicted in block %d as attempt %q, but this entry "+
+					"submitted attempt %q, so the conflict belongs to an attempt already "+
+					"abandoned and nothing is scheduled for it; most likely its earlier "+
+					"attempt reached an orderer despite a submit failure and the client "+
+					"resubmitted it",
+				o.hash.Hex(), blockNum, o.fabricTxID, q.tracked[o.hash].attemptID)
 		default:
 			// Conflicted, tracked, and submitted: another attempt if the budget allows.
 			pending = q.retry(o.hash)
@@ -905,6 +1073,10 @@ func (q *DepGraphQueue) retry(hash common.Hash) bool {
 	// nothing to reuse, processTx falls through to ExecuteEthTx. The stored one
 	// read state that has since been written, so it must not be submitted.
 	t.end, t.endorsed = sdk.Endorsement{}, false
+	// The attempt that conflicted is finished, so neither its identity nor the
+	// fact that a worker held it may carry over: leaving the id in place would let
+	// a redelivery of that same envelope earn a second, undeserved retry.
+	t.attemptID, t.dequeued = "", false
 	// Restart the ready-list clock and ask Dequeue to restart the per-tx metrics
 	// window, which the finished attempt's ObserveTxComplete has consumed.
 	t.readyAt = time.Now()

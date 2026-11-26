@@ -13,9 +13,11 @@ import (
 	"testing"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/hyperledger/fabric-protos-go-apiv2/peer"
 	fc "github.com/hyperledger/fabric-x-evm/common"
 	"github.com/hyperledger/fabric-x-evm/gateway/config"
 	"github.com/hyperledger/fabric-x-evm/gateway/domain"
+	sdk "github.com/hyperledger/fabric-x-sdk"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -174,4 +176,38 @@ func TestGateway_StateReadersDelegate(t *testing.T) {
 	code, err := g.CodeAt(ctx, addr, nil)
 	require.NoError(t, err)
 	assert.Equal(t, stub.code, code)
+}
+
+// A proposal header that will not parse is not a transaction outcome: our own
+// endorsement client built it, so malformed bytes mean the endorsement is corrupt
+// or something that is not a Fabric-X proposal was routed here. A debug build
+// stops; a release build reports no id and degrades to pre-attribution behaviour.
+func TestFabricTxID_MalformedHeaderIsFatalInDebug(t *testing.T) {
+	bad := sdk.Endorsement{Proposal: &peer.Proposal{Header: []byte{0xff, 0xff, 0xff}}}
+	if fc.DebugBuild {
+		require.Panics(t, func() { _ = fabricTxID(ethcommon.Hash{}, bad) },
+			"a debug build stops on a header it cannot parse")
+	} else {
+		require.Empty(t, fabricTxID(ethcommon.Hash{}, bad))
+	}
+}
+
+// An absent proposal reaches the same conclusion by a different route: empty bytes
+// unmarshal cleanly, so no parse fails and it is the missing id that catches it.
+// Worth pinning separately, because the three branches are easy to confuse and
+// only this one is reached by an endorsement that is merely incomplete rather than
+// corrupt.
+func TestFabricTxID_AbsentProposalIsFatalInDebug(t *testing.T) {
+	for _, end := range []sdk.Endorsement{
+		{},
+		{Proposal: &peer.Proposal{}},
+		{Proposal: &peer.Proposal{Header: proposalHeaderFor("")}},
+	} {
+		if fc.DebugBuild {
+			require.Panics(t, func() { _ = fabricTxID(ethcommon.Hash{}, end) },
+				"a debug build stops on an attempt with no id")
+			continue
+		}
+		require.Empty(t, fabricTxID(ethcommon.Hash{}, end))
+	}
 }

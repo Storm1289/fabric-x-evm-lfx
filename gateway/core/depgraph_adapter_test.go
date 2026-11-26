@@ -7,8 +7,11 @@ SPDX-License-Identifier: LGPL-3.0-or-later
 package core
 
 import (
+	"fmt"
+	"sync/atomic"
 	"testing"
 
+	commonpb "github.com/hyperledger/fabric-protos-go-apiv2/common"
 	"github.com/hyperledger/fabric-protos-go-apiv2/ledger/rwset"
 	"github.com/hyperledger/fabric-protos-go-apiv2/ledger/rwset/kvrwset"
 	"github.com/hyperledger/fabric-protos-go-apiv2/peer"
@@ -19,9 +22,34 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// endorsementFor wraps a marshalled payload the way the endorser does.
+// endorsementFor wraps a marshalled payload the way the endorser does: the
+// read-write set in the response payload, and a proposal whose channel header
+// carries the Fabric tx id the envelope will be ordered under.
+//
+// The proposal is not decoration. A real endorsement always has one, and the
+// gateway reads the attempt's id out of it before submitting, so an endorsement
+// without one is a shape production never produces. The id is fresh on every
+// call, as the real builder's random nonce makes it, so two endorsements of one
+// transaction are two attempts that can be told apart.
 func endorsementFor(payload []byte) sdk.Endorsement {
-	return sdk.Endorsement{Responses: []*peer.ProposalResponse{{Payload: payload}}}
+	return sdk.Endorsement{
+		Proposal:  &peer.Proposal{Header: proposalHeaderFor(fmt.Sprintf("endorsed-attempt-%d", attemptSeq.Add(1)))},
+		Responses: []*peer.ProposalResponse{{Payload: payload}},
+	}
+}
+
+var attemptSeq atomic.Uint64
+
+// proposalHeaderFor marshals a proposal header the way fabricx.InvocationBuilder
+// does, so that fabricTxID can read txID back out of it. The messages are fixed
+// literals, so marshalling them cannot fail.
+func proposalHeaderFor(txID string) []byte {
+	chdr, _ := proto.Marshal(&commonpb.ChannelHeader{
+		Type: int32(commonpb.HeaderType_MESSAGE),
+		TxId: txID,
+	})
+	hdr, _ := proto.Marshal(&commonpb.Header{ChannelHeader: chdr})
+	return hdr
 }
 
 // fabricxPayload is what a fabric-x endorsement carries: a marshalled Tx.
