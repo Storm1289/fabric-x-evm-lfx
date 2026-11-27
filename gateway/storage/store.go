@@ -215,6 +215,19 @@ func (s *Store) BlockNumberByHash(ctx context.Context, blockHash []byte) (*uint6
 	return &res, nil
 }
 
+// BlockHash returns the hash of the block with the given number, or nil if the
+// store has no such block. Unlike GetBlockByNumber it loads no transactions.
+func (s *Store) BlockHash(ctx context.Context, blockNumber uint64) ([]byte, error) {
+	b, err := s.queries.GetBlockByNumber(ctx, int64(blockNumber))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return b.BlockHash, nil
+}
+
 // GetBlockByNumber retrieves a block by its number.
 // Always loads transactions so the API layer can return either hashes or full objects.
 func (s *Store) GetBlockByNumber(ctx context.Context, blockNumber uint64, full bool) (*domain.Block, error) {

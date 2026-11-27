@@ -41,6 +41,14 @@ type BlockCutter interface {
 	CutBlock(ctx context.Context) error
 }
 
+// BlockReverter truncates the in-process test network's chain, so that after
+// evm_revert the next block continues from the reverted height instead of the
+// pre-revert tip. Satisfied by *fabrictest.Network. Optional: if the cutter does
+// not implement it, evm_revert rewinds only our own state and block numbers drift.
+type BlockReverter interface {
+	Revert(ctx context.Context, num uint64) error
+}
+
 const (
 	mineSyncTimeout  = 10 * time.Second
 	minePollInterval = 10 * time.Millisecond
@@ -354,9 +362,21 @@ func (api *EvmAPI) Revert(ctx context.Context, snapshotID string) (bool, error) 
 	}
 	hardhatLogger.Debugf("EvmAPI.Revert() snapshotID=%s -> block=%d", snapshotID, blockNumber)
 
+	// LightKVS first: it is the step that can refuse (a target older than its
+	// history), and refusing before anything has moved leaves the ledger as it
+	// was. Submissions are fenced, so no block is cut between the steps.
 	if err := api.lightKVS.RevertToBlock(blockNumber); err != nil {
 		hardhatLogger.Warnf("EvmAPI.Revert() returning error: %v", err)
 		return false, fmt.Errorf("failed to revert LightKVS to block %d: %w", blockNumber, err)
+	}
+
+	// Then the network, so blocks cut after the revert are numbered from the
+	// reverted height.
+	if r, ok := api.cutter.(BlockReverter); ok {
+		if err := r.Revert(ctx, blockNumber); err != nil {
+			hardhatLogger.Warnf("EvmAPI.Revert() returning error: %v", err)
+			return false, fmt.Errorf("failed to revert network to block %d: %w", blockNumber, err)
+		}
 	}
 
 	if err := api.store.RevertToBlock(ctx, blockNumber); err != nil {
