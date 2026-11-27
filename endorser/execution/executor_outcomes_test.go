@@ -70,9 +70,11 @@ func TestEVMEngineExecute_WrongChainSignatureIsRejected(t *testing.T) {
 	requireRejected(t, res, err, types.ErrInvalidChainId)
 }
 
+// failingSnapshotter is a state.Snapshotter whose snapshots never open, at any height.
 type failingSnapshotter struct{ err error }
 
 func (f failingSnapshotter) Snapshot(context.Context) (ReadStore, error) { return nil, f.err }
+
 func (f failingSnapshotter) SnapshotAt(context.Context, uint64) (ReadStore, error) {
 	return nil, f.err
 }

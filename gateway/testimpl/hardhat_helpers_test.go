@@ -106,6 +106,7 @@ func TestEvmAPI_SetAutomine_MissingArg(t *testing.T) {
 // evm_revert rewinds, stubbed down to what EvmAPI actually calls.
 type mockRevertibleKVS struct {
 	onRevert func(blockNumber uint64)
+	err      error
 }
 
 func (m *mockRevertibleKVS) BlockNumber(context.Context) (uint64, error) { return 1, nil }
@@ -114,7 +115,7 @@ func (m *mockRevertibleKVS) RevertToBlock(blockNumber uint64) error {
 	if m.onRevert != nil {
 		m.onRevert(blockNumber)
 	}
-	return nil
+	return m.err
 }
 
 // recordingNonces counts the nonce resets a revert asks the gateway for.
@@ -149,6 +150,64 @@ func TestEvmAPI_RevertResetsNonces(t *testing.T) {
 			require.Equal(t, 1, nonces.resets)
 		})
 	}
+}
+
+// recordingStore records the block each revert asks for.
+type recordingStore struct {
+	mockRevertibleStore
+	onRevert func(blockNumber uint64)
+}
+
+func (r *recordingStore) RevertToBlock(_ context.Context, blockNumber uint64) error {
+	r.onRevert(blockNumber)
+	return nil
+}
+
+// recordingReverter is a BlockCutter that also implements BlockReverter, as
+// *fabrictest.Network does.
+type recordingReverter struct {
+	fakeCutter
+	onRevert func(blockNumber uint64)
+}
+
+func (r *recordingReverter) Revert(_ context.Context, blockNumber uint64) error {
+	r.onRevert(blockNumber)
+	return nil
+}
+
+// evm_revert rewinds the endorser state, the network and the gateway store to the
+// snapshot's block, the LightKVS first because it is the step that can refuse.
+func TestEvmAPI_RevertRewindsNetwork(t *testing.T) {
+	var events []string
+	record := func(name string) func(uint64) {
+		return func(n uint64) { events = append(events, fmt.Sprintf("%s@%d", name, n)) }
+	}
+	api := NewEvmAPI(&mockRevertibleKVS{onRevert: record("kvs")}, &recordingStore{onRevert: record("store")},
+		&txFence{pool: &fakePool{}}, &recordingNonces{}, &recordingReverter{onRevert: record("network")}, nil)
+
+	id, err := api.Snapshot(context.Background())
+	require.NoError(t, err)
+	ok, err := api.Revert(context.Background(), id)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, []string{"kvs@1", "network@1", "store@1"}, events)
+}
+
+// A LightKVS that refuses the target fails the revert before the network or the
+// store has moved, so the ledger is left as it was.
+func TestEvmAPI_RevertKVSFailureLeavesNetwork(t *testing.T) {
+	var events []string
+	record := func(name string) func(uint64) {
+		return func(n uint64) { events = append(events, fmt.Sprintf("%s@%d", name, n)) }
+	}
+	api := NewEvmAPI(&mockRevertibleKVS{err: errors.New("not in history")}, &recordingStore{onRevert: record("store")},
+		&txFence{pool: &fakePool{}}, &recordingNonces{}, &recordingReverter{onRevert: record("network")}, nil)
+
+	id, err := api.Snapshot(context.Background())
+	require.NoError(t, err)
+	_, err = api.Revert(context.Background(), id)
+	require.Error(t, err)
+	require.Empty(t, events)
 }
 
 // TestEvmAPI_RevertWaitsForInFlightTransaction pins the invariant the txFence
