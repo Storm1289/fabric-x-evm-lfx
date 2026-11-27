@@ -8,6 +8,7 @@ package testimpl
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -115,8 +116,19 @@ func (e *BalancePrimingExecutor) Execute(tx *types.Transaction) (endorsement.Exe
 
 	// Execute the transaction using the base Executor
 	_, usedGas, err := e.Executor.Send(tx)
+	status := endorsementpb.ExecutionStatus_EXECUTION_STATUS_SUCCESS
+	message := ""
 	if err != nil {
-		return endorsement.ExecutionResult{}, err
+		// A revert or exec failure is a committed outcome, as in execution.Endorse; anything else is a rejection.
+		_, isExecFailure := errors.AsType[*execution.ExecFailure](err)
+		switch {
+		case errors.Is(err, vm.ErrExecutionReverted):
+			status, message = endorsementpb.ExecutionStatus_EXECUTION_STATUS_REVERTED, err.Error()
+		case isExecFailure:
+			status, message = endorsementpb.ExecutionStatus_EXECUTION_STATUS_EXEC_FAILED, err.Error()
+		default:
+			return endorsement.ExecutionResult{}, err
+		}
 	}
 
 	r := e.state.Result()
@@ -130,9 +142,13 @@ func (e *BalancePrimingExecutor) Execute(tx *types.Transaction) (endorsement.Exe
 	}
 	r.Reads = filteredReads
 
-	return execution.NewResult(r, e.state.Logs(), &endorsementpb.ExecutionMetadata{
-		Status:    endorsementpb.ExecutionStatus_EXECUTION_STATUS_SUCCESS,
+	logs := e.state.Logs()
+	if status != endorsementpb.ExecutionStatus_EXECUTION_STATUS_SUCCESS {
+		logs = nil
+	}
+	return execution.NewResult(r, logs, &endorsementpb.ExecutionMetadata{
+		Status:    status,
 		GasUsed:   usedGas,
 		Timestamp: e.Executor.BlockCtx.Time,
-	}, "")
+	}, message)
 }

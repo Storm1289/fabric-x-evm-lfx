@@ -208,6 +208,11 @@ type DepGraphQueue struct {
 	tracked map[common.Hash]*trackedTx
 	done    bool
 
+	// adoptReady reports whether the node is live; nil means always. While it
+	// errors, untracked conflicts are history being replayed and wait in deferred.
+	adoptReady func() error
+	deferred   []txOutcome
+
 	// commitSeq counts the blocks Handle has seen. lastWrite maps each key a
 	// tracked transaction wrote in the last reuseWindow blocks to the commitSeq
 	// of that write; recent lists each of those blocks' keys, so a block's
@@ -699,7 +704,7 @@ func (q *DepGraphQueue) Handle(_ context.Context, block *domain.Block) error {
 	// Each error is a state that should not arise: a conflict this queue can no
 	// longer do anything useful about. Panicking here rather than inside keeps
 	// q.mu out of it, the way markReady does.
-	for _, err := range q.untrackOrRetry(block.Transactions, outcomes, block.BlockNumber) {
+	for _, err := range q.untrackOrRetry(block.Transactions, outcomes, block.BlockNumber, q.live()) {
 		fc.DebugPanic(err.Error())
 	}
 	return nil
@@ -729,12 +734,15 @@ type txOutcome struct {
 // It returns one error per state that should not have arisen, for the caller to
 // debug-panic on once it is off the lock. Takes q.mu itself.
 func (q *DepGraphQueue) untrackOrRetry(
-	committed []domain.Transaction, outcomes []txOutcome, blockNum uint64,
+	committed []domain.Transaction, outcomes []txOutcome, blockNum uint64, live bool,
 ) []error {
 	var nodes dependencygraph.TxNodeBatch
 	var errs []error
 
 	q.mu.Lock()
+	if live {
+		errs = append(errs, q.adoptDeferred()...)
+	}
 	q.recordCommitted(committed)
 	for _, o := range outcomes {
 		// Each case answers one question: is this transaction still ours after
@@ -749,6 +757,12 @@ func (q *DepGraphQueue) untrackOrRetry(
 			// Finished: committed, or failed in a way another attempt cannot fix.
 		case q.done:
 			// Shutting down; starting an attempt nothing will finish is pointless.
+		case q.tracked[o.hash] == nil && !live:
+			// Replayed history: the endorser's state is still behind, so executing
+			// it now would read stale state. Adopt it once the node is live.
+			q.deferred = append(q.deferred, o)
+			depGraphLogger.Infof("[MVCC-DEFERRED] tx %s conflicted in block %d while catching up; adopting it once live",
+				o.hash.Hex(), blockNum)
 		case q.tracked[o.hash] == nil:
 			// Conflicted with no entry behind it (a nil value is a missing key),
 			// so there is nothing to retry from and adopt builds one.
@@ -928,6 +942,38 @@ func (q *DepGraphQueue) adopt(o txOutcome) (bool, error) {
 			"adopting it with a fresh entry and executing it again (attempt 2 of %d)",
 		o.hash.Hex(), q.maxMVCCRetries+1)
 	return true, nil
+}
+
+// AdoptOnceLive defers adopting untracked conflicts while ready reports an error.
+// Call it before the synchronizer delivers blocks.
+func (q *DepGraphQueue) AdoptOnceLive(ready func() error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.adoptReady = ready
+}
+
+// live reports whether untracked conflicts can be adopted now. Called without q.mu.
+func (q *DepGraphQueue) live() bool {
+	q.mu.RLock()
+	ready := q.adoptReady
+	q.mu.RUnlock()
+	return ready == nil || ready() == nil
+}
+
+// adoptDeferred adopts the conflicts held back while catching up, skipping any
+// the client has resubmitted since. Caller must hold q.mu.
+func (q *DepGraphQueue) adoptDeferred() []error {
+	var errs []error
+	for _, o := range q.deferred {
+		if q.done || q.tracked[o.hash] != nil {
+			continue
+		}
+		if _, err := q.adopt(o); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	q.deferred = nil
+	return errs
 }
 
 // reuseWindow is how many blocks an endorsement can be reused across. One that

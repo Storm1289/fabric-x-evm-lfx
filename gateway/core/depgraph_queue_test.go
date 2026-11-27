@@ -11,6 +11,7 @@ import (
 	"errors"
 	"math/big"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1102,4 +1103,68 @@ func TestDepGraphQueue_FullChannelOnAdoptDebugPanics(t *testing.T) {
 		require.NoError(t, q.Handle(context.Background(), block))
 	}
 	require.Nil(t, q.IsPending(lost.Hash()), "a dropped retry must not stay tracked")
+}
+
+// catchingUp is an AdoptOnceLive readiness check the test flips to live.
+type catchingUp struct{ live atomic.Bool }
+
+func (c *catchingUp) ready() error {
+	if c.live.Load() {
+		return nil
+	}
+	return errors.New("catching up")
+}
+
+// A conflict replayed while catching up is not executed against stale state, and is adopted once live.
+func TestDepGraphQueue_ConflictWhileCatchingUpIsAdoptedOnceLive(t *testing.T) {
+	q, e := newDepQueue(t)
+	sync := &catchingUp{}
+	q.AdoptOnceLive(sync.ready)
+	old, other := txWithNonce(1), txWithNonce(2)
+
+	require.NoError(t, q.Handle(context.Background(), mvccConflictBlockWithRaw(t, old)))
+	require.Nil(t, q.IsPending(old.Hash()), "history is not adopted while catching up")
+	require.Never(t, func() bool { return e.calls() > 0 }, 200*time.Millisecond, 10*time.Millisecond,
+		"nothing is executed while the endorser's state is behind")
+
+	// The next block after going live adopts it.
+	sync.live.Store(true)
+	require.NoError(t, q.Handle(context.Background(), fabricCommittedBlock(other)))
+	require.NotNil(t, q.IsPending(old.Hash()), "adopted once live")
+	requireReady(t, q, 1)
+	got, ok := q.Dequeue()
+	require.True(t, ok)
+	require.Equal(t, old.Hash(), got.Hash())
+}
+
+// A held-back conflict the client resubmitted in the meantime is not adopted a second time.
+func TestDepGraphQueue_DeferredConflictResubmittedIsNotAdoptedTwice(t *testing.T) {
+	q, e := newDepQueue(t)
+	sync := &catchingUp{}
+	q.AdoptOnceLive(sync.ready)
+	old, other := txWithNonce(1), txWithNonce(2)
+
+	require.NoError(t, q.Handle(context.Background(), mvccConflictBlockWithRaw(t, old)))
+	require.NoError(t, q.Enqueue(old))
+	requireReady(t, q, 1)
+
+	sync.live.Store(true)
+	require.NoError(t, q.Handle(context.Background(), fabricCommittedBlock(other)))
+	require.Never(t, func() bool { return readyCount(q) > 1 || e.calls() > 1 }, 200*time.Millisecond, 10*time.Millisecond,
+		"the resubmission is the only attempt")
+}
+
+// Once live, a conflict is adopted at once, as before.
+func TestDepGraphQueue_ConflictIsAdoptedAtOnceWhenLive(t *testing.T) {
+	q, _ := newDepQueue(t)
+	sync := &catchingUp{}
+	sync.live.Store(true)
+	q.AdoptOnceLive(sync.ready)
+	tx := txWithNonce(1)
+
+	require.NoError(t, q.Handle(context.Background(), mvccConflictBlockWithRaw(t, tx)))
+	requireReady(t, q, 1)
+	got, ok := q.Dequeue()
+	require.True(t, ok)
+	require.Equal(t, tx.Hash(), got.Hash())
 }

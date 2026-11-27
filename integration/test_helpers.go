@@ -293,6 +293,10 @@ func buildTestHarness(t *testing.T, logger sdk.Logger, cfg config.Config, evmCon
 		if err != nil {
 			return nil, nil, err
 		}
+		// Blocks replayed before the synchronizer is ready are history, not live conflicts.
+		if dq, ok := gw.TxQueue.(*core.DepGraphQueue); ok {
+			dq.AdoptOnceLive(sync.Ready)
+		}
 
 		go func() { _ = sync.Start(t.Context()) }()
 	}

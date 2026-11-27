@@ -239,6 +239,10 @@ func buildApp(ctx context.Context, cfg config.Config, gwSigner sdk.Signer, logge
 	if errSync != nil {
 		return nil, fmt.Errorf("failed to create synchronizer: %w", errSync)
 	}
+	// Blocks replayed before the synchronizer is ready are history, not live conflicts.
+	if dq, ok := gateway.TxQueue.(*core.DepGraphQueue); ok {
+		dq.AdoptOnceLive(syncer.Ready)
+	}
 
 	// Create RPC server - use test server if explicitly enabled
 	var rpcServer *rpc.Server

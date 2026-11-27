@@ -121,8 +121,9 @@ func (m *memHeightTracker) GetLogsByTxHash(_ context.Context, _ []byte) ([]domai
 // runs the whole handler chain on one goroutine in block order, that cost is serial and
 // caps throughput directly.
 //
-// It fills only the fields TxQueue.Handle and TxQueueV2.Handle actually consume — TxHash
-// and Status — so TxQueue.Stats(), and therefore the reported invalid_rate, is unchanged.
+// It fills only the fields the queues actually consume — TxHash, Status, FabricTxStatus,
+// and RawTx for DepGraphQueue's adopt — so TxQueue.Stats(), and therefore the reported
+// invalid_rate, is unchanged.
 // Logs are deliberately not populated: neither queue reads them and memHeightTracker's
 // GetLogs* return nil anyway.
 //
@@ -169,6 +170,8 @@ func (p *perfCompleter) Handle(ctx context.Context, b blocks.Block) error {
 			TxHash:         ethTx.Hash().Bytes(),
 			Status:         status,
 			FabricTxStatus: tx.Status,
+			// Same as ConvertToDomain: the queue rebuilds an untracked conflicted tx from it.
+			RawTx: ethTxBytes,
 		})
 	}
 
