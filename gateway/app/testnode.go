@@ -33,8 +33,7 @@ func (localSigner) Serialize() ([]byte, error) {
 	return proto.Marshal(&msp.SerializedIdentity{Mspid: "test-msp", IdBytes: []byte("serialised identity")})
 }
 
-// TestNodeConfig carries the flags exposed by `fxevm testnode`'s self-contained
-// (no --config) path.
+// TestNodeConfig carries the flags exposed by `fxevm testnode`.
 type TestNodeConfig struct {
 	Listen           string
 	ChainID          int64

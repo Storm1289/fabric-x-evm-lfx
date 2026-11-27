@@ -14,6 +14,7 @@ import (
 
 	fc "github.com/hyperledger/fabric-x-evm/common"
 	"github.com/hyperledger/fabric-x-evm/gateway/domain"
+	"github.com/hyperledger/fabric-x-evm/gateway/storage"
 	"github.com/hyperledger/fabric-x-sdk/blocks"
 	_ "modernc.org/sqlite"
 
@@ -123,23 +124,22 @@ func TestHandle_ReprocessingSameBlockKeepsIndexesStable(t *testing.T) {
 	require.Equal(t, ethTx.Hash().Bytes(), logEntries[0].TxHash)
 }
 
-// TestHandle_PrevHashAdvancesOnlyAfterSuccessfulInsert locks the happy path:
-// the published tip moves exactly once per durable block.
-func TestHandle_PrevHashAdvancesOnlyAfterSuccessfulInsert(t *testing.T) {
+// TestHandle_LinksEachBlockToItsParent locks the happy path: every stored block
+// names the stored hash of the block before it.
+func TestHandle_LinksEachBlockToItsParent(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "gateway.db")
 	chain, err := NewChain(dbPath)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = chain.Close() })
 
-	require.Equal(t, common.Hash{}, chain.prevHash)
-
 	block1 := emptyResilienceBlock(1, 0x01, 1000)
 	require.NoError(t, chain.Handle(t.Context(), block1))
-	require.Equal(t, common.BytesToHash(block1.Hash), chain.prevHash)
+	stored1, err := chain.GetBlockByNumber(t.Context(), 1, false)
+	require.NoError(t, err)
+	require.Equal(t, common.Hash{}.Bytes(), stored1.ParentHash)
 
 	block2 := emptyResilienceBlock(2, 0x02, 2000)
 	require.NoError(t, chain.Handle(t.Context(), block2))
-	require.Equal(t, common.BytesToHash(block2.Hash), chain.prevHash)
 
 	latest, err := chain.LatestBlock(t.Context(), false)
 	require.NoError(t, err)
@@ -157,8 +157,9 @@ func emptyResilienceBlock(number uint64, hashPrefix byte, ts int64) blocks.Block
 	}
 }
 
-// TestHandle_PrevHashNotAdvancedOnInsertFailure is the regression for #304.
-func TestHandle_PrevHashNotAdvancedOnInsertFailure(t *testing.T) {
+// TestHandle_FailsWhenInsertCannotRun is the regression for #304: a block the
+// store cannot take is an error, never a silent success.
+func TestHandle_FailsWhenInsertCannotRun(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "gateway.db")
 
 	chain, err := NewChain(dbPath)
@@ -198,10 +199,8 @@ func TestHandle_PrevHashNotAdvancedOnInsertFailure(t *testing.T) {
 		}},
 	}
 	require.NoError(t, chain.Handle(t.Context(), block1))
-	prevHashAfterBlock1 := chain.prevHash
-	require.Equal(t, common.BytesToHash(block1.Hash), prevHashAfterBlock1)
 
-	// Force InsertBlock to fail by closing the SQL handle.
+	// Force the store to fail by closing the SQL handle.
 	require.NoError(t, chain.db.Close())
 
 	block2 := blocks.Block{
@@ -226,9 +225,39 @@ func TestHandle_PrevHashNotAdvancedOnInsertFailure(t *testing.T) {
 			}},
 		}},
 	}
-	err = chain.Handle(t.Context(), block2)
-	require.Error(t, err, "Handle must fail when InsertBlock cannot run")
+	// An error the synchronizer would retry forever panics in debug builds.
+	if fc.DebugBuild {
+		require.Panics(t, func() { _ = chain.Handle(t.Context(), block2) })
+		return
+	}
+	require.Error(t, chain.Handle(t.Context(), block2), "Handle must fail when the store cannot take the block")
+}
 
-	require.Equal(t, prevHashAfterBlock1, chain.prevHash,
-		"prevHash must not advance when InsertBlock fails")
+// After evm_revert drops blocks, the next block must link to the new tip. A
+// parent hash remembered from before the revert would point at the dropped block
+// and, once block numbers repeat with identical content, collide on the
+// parent_hash UNIQUE key.
+func TestHandle_AfterRevertLinksToNewTip(t *testing.T) {
+	chain, err := NewChain(filepath.Join(t.TempDir(), "gateway.db"))
+	require.NoError(t, err)
+	defer chain.Close()
+
+	snap := storage.NewSnapshotStore(chain.Store)
+
+	handle := func(num uint64, hash byte) {
+		require.NoError(t, chain.Handle(t.Context(), blocks.Block{Number: num, Hash: resilienceHash(hash)}))
+	}
+	handle(1, 0xA1)
+	handle(2, 0xA2)
+	handle(3, 0xA3)
+
+	require.NoError(t, snap.RevertToBlock(t.Context(), 1))
+
+	// The same block 2 again, as a replayed fixture would produce.
+	handle(2, 0xA2)
+	handle(3, 0xA3)
+
+	b2, err := chain.GetBlockByNumber(t.Context(), 2, false)
+	require.NoError(t, err)
+	require.Equal(t, resilienceHash(0xA1), b2.ParentHash)
 }
