@@ -116,7 +116,7 @@ func remoteDialFailureConfig() config.Config {
 // endorser construction is attempted.
 func TestNewApp_RequiresEndorser(t *testing.T) {
 	cfg := config.Config{Gateway: &config.Gateway{}}
-	_, err := newApp(context.Background(), cfg, nil, false, "")
+	_, err := newApp(context.Background(), cfg, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -128,7 +128,7 @@ func TestNewApp_RequiresEndorser(t *testing.T) {
 // A dial failure for a remote endorser must fail newApp outright, before ever
 // building the local endorser (no MSP/DB setup should be attempted).
 func TestNewApp_RemoteDialFailureReturnsError(t *testing.T) {
-	_, err := newApp(context.Background(), remoteDialFailureConfig(), nil, false, "")
+	_, err := newApp(context.Background(), remoteDialFailureConfig(), nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -160,7 +160,7 @@ func TestNewApp_ClosesEarlierConnsOnLaterDialFailure(t *testing.T) {
 		},
 	}
 
-	_, err := newApp(context.Background(), cfg, nil, false, "")
+	_, err := newApp(context.Background(), cfg, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -196,7 +196,7 @@ func TestNewApp_Success(t *testing.T) {
 	dbPath := "file:" + filepath.Join(t.TempDir(), "gw.db")
 	cfg := fullAppConfig(t, dbPath)
 
-	app, err := newApp(context.Background(), cfg, nil, false, "")
+	app, err := newApp(context.Background(), cfg, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestNewApp_LocalEndorserFailureClosesConns(t *testing.T) {
 	// remote has already dialed successfully.
 	cfg.Endorser.Identity.MSPDir = t.TempDir()
 
-	_, err := newApp(context.Background(), cfg, nil, false, "")
+	_, err := newApp(context.Background(), cfg, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -238,7 +238,7 @@ func TestNewApp_BuildAppFailureClosesConns(t *testing.T) {
 	// database.
 	cfg := fullAppConfig(t, "file:/no/such/directory/gw.db")
 
-	_, err := newApp(context.Background(), cfg, nil, false, "")
+	_, err := newApp(context.Background(), cfg, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -254,7 +254,7 @@ func TestApp_Shutdown_ToleratesEndorserCloseError(t *testing.T) {
 	dbPath := "file:" + filepath.Join(t.TempDir(), "gw.db")
 	cfg := fullAppConfig(t, dbPath)
 
-	app, err := newApp(context.Background(), cfg, nil, false, "")
+	app, err := newApp(context.Background(), cfg, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

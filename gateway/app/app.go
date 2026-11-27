@@ -80,20 +80,12 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 // NewWithSigner builds the gateway application with the provided signer.
 // Useful for callers that manage identity externally, such as integration tests.
 func NewWithSigner(ctx context.Context, cfg config.Config, gwSigner sdk.Signer) (*App, error) {
-	return newApp(ctx, cfg, gwSigner, false, "")
+	return newApp(ctx, cfg, gwSigner)
 }
 
-// NewTestNodeWithConfig builds a gateway against a real ordering backend described by cfg,
-// with test RPC forced on.
-func NewTestNodeWithConfig(ctx context.Context, cfg config.Config, testAccountsPath string) (*App, error) {
-	gwSigner, err := identity.SignerFromMSP(cfg.Gateway.Identity.MSPDir, cfg.Gateway.Identity.MspID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create gateway signer: %w", err)
-	}
-	return newApp(ctx, cfg, gwSigner, true, testAccountsPath)
-}
-
-func newApp(ctx context.Context, cfg config.Config, gwSigner sdk.Signer, enableTestRPC bool, testAccountsPath string) (*App, error) {
+// newApp builds a production gateway with its in-process endorser. The test RPC
+// is only wired up by NewTestNode, which owns the in-process network it needs.
+func newApp(ctx context.Context, cfg config.Config, gwSigner sdk.Signer) (*App, error) {
 	logger := flogging.MustGetLogger("gateway.app")
 
 	if cfg.Endorser == nil {
@@ -132,20 +124,13 @@ func newApp(ctx context.Context, cfg config.Config, gwSigner sdk.Signer, enableT
 		ChainConfig: common.BuildChainConfig(cfg.Network.ChainID),
 		MaxTxGas:    cfg.Network.MaxTxGas,
 	}
-	end, kvs, builder, err := eapp.NewEndorserCore(ecfg.Database, cfg.Network.Channel, cfg.Network.Namespace, cfg.Network.Protocol, eSigner, evmConfig, enableTestRPC, ecfg)
+	end, kvs, _, err := eapp.NewEndorserCore(ecfg.Database, cfg.Network.Channel, cfg.Network.Namespace, cfg.Network.Protocol, eSigner, evmConfig, false, ecfg)
 	if err != nil {
 		closeAll()
 		return nil, fmt.Errorf("endorser (%s): %w", ecfg.Name, err)
 	}
 
-	// One in-process endorser, so one builder: enough for the test RPC's hardhat state
-	// directives to self-endorse their priming transactions.
-	var test *testRPCDeps
-	if enableTestRPC {
-		test = &testRPCDeps{kvs: kvs, builders: []endorsement.Builder{builder}, accountsPath: testAccountsPath}
-	}
-
-	app, err := buildApp(ctx, cfg, gwSigner, logger, end, remotes, test, kvs)
+	app, err := buildApp(ctx, cfg, gwSigner, logger, end, remotes, nil, kvs)
 	if err != nil {
 		closeAll()
 		return nil, err
@@ -173,8 +158,8 @@ type testRPCDeps struct {
 	// accountsPath is the file the server-side signing keys are loaded from.
 	accountsPath string
 
-	// cutter cuts empty blocks for hardhat_mine / evm_mine on testnode.
-	// Nil on config-based EnableTestRPC; those RPCs then return an error.
+	// cutter is the in-process network: it cuts empty blocks for hardhat_mine /
+	// evm_mine. Required; buildApp rejects a nil cutter.
 	cutter testimpl.BlockCutter
 }
 
@@ -182,6 +167,10 @@ type testRPCDeps struct {
 // endorsers. extraHandlers are prepended to the synchronizer handler list, ahead of
 // chain/gateway. test enables the test RPC surface; pass nil in production.
 func buildApp(ctx context.Context, cfg config.Config, gwSigner sdk.Signer, logger sdk.Logger, local eapi.Service, remotes []eapi.Service, test *testRPCDeps, extraHandlers ...blocks.BlockHandler) (*App, error) {
+	if test != nil && test.cutter == nil {
+		return nil, fmt.Errorf("test RPC enabled but no block cutter was supplied")
+	}
+
 	orderers := make([]network.OrdererConf, len(cfg.Gateway.Orderers))
 	for i, o := range cfg.Gateway.Orderers {
 		orderers[i] = o.ToOrdererConf()
@@ -240,9 +229,9 @@ func buildApp(ctx context.Context, cfg config.Config, gwSigner sdk.Signer, logge
 	handlers := append(extraHandlers, chain, filterAPI, gateway)
 	var syncer synchronizer.Synchronizer
 	var errSync error
-	if test != nil && test.cutter != nil {
-		// Self contained testnode (fabrictest + CutBlock): delivery sync, so a rewound
-		// ledger can be followed. See synchronizer.NewDelivery.
+	if test != nil {
+		// Testnode (fabrictest + CutBlock): delivery sync, so a rewound ledger can be
+		// followed. See synchronizer.NewDelivery.
 		syncer, errSync = synchronizer.NewDelivery(cfg.Network.Protocol, chain, cfg.Network.Channel, cfg.Network.Namespace, cfg.Committer.ToPeerConf(), gwSigner, logger, handlers...)
 	} else {
 		syncer, errSync = synchronizer.New(cfg.Network.Protocol, chain, cfg.Network.Channel, cfg.Network.Namespace, cfg.Committer.ToPeerConf(), gwSigner, logger, cfg.Synchronizer.AllTxQueueDepth, handlers...)
